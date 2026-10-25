@@ -815,12 +815,12 @@ $("#import").onchange = async e => {
 
 /* ============ Sorties ============ */
 const RELEASES = [
-  { d: "2026-10-24", g: "pokemon", t: "Avant-premières Règne Delta", n: "Tournois en boutique avant la sortie de ME06.", s: "ok" },
-  { d: "2026-10-30", g: "pokemon", t: "Decks de combat Mentali-ex et Noctali-ex", n: "Decks prêts à jouer.", s: "tbc" },
-  { d: "2026-11-06", g: "pokemon", t: "Méga-Évolution — Règne Delta (ME06)", n: "Nouvelle extension : boosters, ETB, displays.", s: "ok" },
-  { d: "2026-11-06", g: "pokemon", t: "Collection Ultra Premium 30e Anniversaire", n: "Versions Jour et Nuit.", s: "tbc" },
-  { d: "2026-11-20", g: "onepiece", t: "OP-18 — The Dominance of God", n: "Date de la version anglaise. Date française pas encore annoncée.", s: "tbc" },
-  { d: "2026-12-04", g: "pokemon", t: "Dernière vague 30e Anniversaire", n: "Produits pas encore détaillés.", s: "tbc" }
+  { d: "2026-10-24", g: "pokemon", t: "Avant-premières Règne Delta", q: "Pokémon Règne Delta", n: "Tournois en boutique avant la sortie de ME06.", s: "ok" },
+  { d: "2026-10-30", g: "pokemon", t: "Decks de combat Mentali-ex et Noctali-ex", q: "Pokémon deck de combat Mentali-ex Noctali-ex", n: "Decks prêts à jouer.", s: "tbc" },
+  { d: "2026-11-06", g: "pokemon", t: "Méga-Évolution — Règne Delta (ME06)", q: "Pokémon Règne Delta", n: "Nouvelle extension : boosters, ETB, displays.", s: "ok" },
+  { d: "2026-11-06", g: "pokemon", t: "Collection Ultra Premium 30e Anniversaire", q: "Pokémon collection ultra premium 30e anniversaire", n: "Versions Jour et Nuit.", s: "tbc" },
+  { d: "2026-11-20", g: "onepiece", t: "OP-18 — The Dominance of God", q: "One Piece Card Game OP-18", n: "Date de la version anglaise. Date française pas encore annoncée.", s: "tbc" },
+  { d: "2026-12-04", g: "pokemon", t: "Dernière vague 30e Anniversaire", q: "Pokémon 30e anniversaire", n: "Produits pas encore détaillés.", s: "tbc" }
 ];
 function renderRel() {
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -830,8 +830,11 @@ function renderRel() {
     const when = days > 1 ? `dans ${days} jours` : days === 1 ? "demain" : days === 0 ? "aujourd'hui" : "en cours";
     return `<article class="rel"><div class="date"><b>${d.getDate()}</b><span>${d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span></div>
       <div class="info"><div class="tags"><span class="tag ${g.cls}">${g.label}</span><span class="state ${r.s}">${r.s === "ok" ? "Confirmé" : "Annoncé"}</span></div>
-      <h3>${esc(r.t)}</h3><p>${esc(r.n)}</p><div class="row"><span class="when">${when}</span><a class="buy" href="#magasins">Où l'acheter près de moi →</a></div></div></article>`;
+      <h3>${esc(r.t)}</h3><p>${esc(r.n)}</p><div class="row"><span class="when">${when}</span><a class="buy" href="#magasins" data-q="${esc(r.q)}">Où l'acheter près de moi →</a></div></div></article>`;
   }).join("");
+  $$("#rels .buy").forEach(a => a.onclick = () => { $("#product").value = a.dataset.q; productChanged(); });
+  const seenQ = new Set();
+  $("#productList").innerHTML = RELEASES.filter(r => !seenQ.has(r.q) && seenQ.add(r.q)).map(r => `<option value="${esc(r.q)}">${esc(r.t)}</option>`).join("");
 }
 
 /* ============ Magasins autour de moi (OpenStreetMap) ============ */
@@ -842,6 +845,38 @@ const STORE_CATS = {
   jouets: { label: "Jouets", color: "#4CC38A" },
   gms: { label: "Grandes surfaces", color: "#F0506A" }
 };
+/* Enseignes : leur site permet de choisir un magasin et d'y voir le stock. On passe par une recherche Google limitée au site,
+   le seul format d'adresse stable d'une enseigne à l'autre. */
+const BRANDS = [
+  { re: /espace culturel|leclerc/i, name: "E.Leclerc", site: "e.leclerc" },
+  { re: /fnac/i, name: "Fnac", site: "fnac.com" },
+  { re: /cultura/i, name: "Cultura", site: "cultura.com" },
+  { re: /micromania/i, name: "Micromania", site: "micromania.fr" },
+  { re: /king jouet/i, name: "King Jouet", site: "king-jouet.com" },
+  { re: /jou[ée] ?club/i, name: "JouéClub", site: "joueclub.fr" },
+  { re: /grande r[ée]cr[ée]/i, name: "La Grande Récré", site: "lagranderecre.fr" },
+  { re: /carrefour/i, name: "Carrefour", site: "carrefour.fr" },
+  { re: /auchan/i, name: "Auchan", site: "auchan.fr" },
+  { re: /intermarch/i, name: "Intermarché", site: "intermarche.com" },
+  { re: /hyper u|super u|\bu express/i, name: "Magasins U", site: "coursesu.com" }
+];
+const brandOf = name => BRANDS.find(b => b.re.test(name || ""));
+function productQuery() {
+  const p = $("#product").value.trim() || "cartes Pokémon One Piece";
+  return [p, $("#ptype").value].filter(Boolean).join(" ");
+}
+const siteSearch = (site, q) => `https://www.google.com/search?q=${encodeURIComponent(q + " site:" + site)}`;
+function renderBrandLinks() {
+  const q = productQuery(), near = new Set(shops.filter(s => catOn[s.cat]).map(s => brandOf(s.name)?.name).filter(Boolean));
+  const list = [...BRANDS].sort((a, b) => near.has(b.name) - near.has(a.name));
+  $("#brandLinks").innerHTML = `<span class="cfg-label">Stock en ligne par enseigne</span><div class="chips">${list.map(b =>
+    `<a class="chip" href="${siteSearch(b.site, q)}" target="_blank" rel="noopener">${near.has(b.name) ? '<span class="dot" style="--c:var(--ok)"></span>' : ""}${b.name} ↗</a>`).join("")}</div>
+    ${near.size ? '<p class="fine">Point vert : enseigne présente près de vous.</p>' : ""}`;
+}
+let pTimer;
+function productChanged() { store.set("cotecarte.product", { p: $("#product").value, t: $("#ptype").value }); clearTimeout(pTimer); pTimer = setTimeout(() => { renderBrandLinks(); renderShops(); }, 200); }
+$("#product").addEventListener("input", productChanged);
+$("#ptype").addEventListener("change", productChanged);
 const catOn = Object.assign({ spec: true, jv: true, culture: true, jouets: true, gms: false }, store.get("cotecarte.storeCats", {}));
 let here = store.get("cotecarte.here", null), shops = [], lmap = null, markers = null, markerById = new Map();
 function haversine(a, b, c, d) {
@@ -859,10 +894,10 @@ function catOf(t) {
 }
 const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
 async function fetchShops(lat, lon, km) {
-  const key = `cotecarte.shops.${lat.toFixed(3)},${lon.toFixed(3)},${km}`;
+  const key = `cotecarte.shops2.${lat.toFixed(3)},${lon.toFixed(3)},${km}`;
   try { const c = JSON.parse(sessionStorage.getItem(key) || "null"); if (c) return c; } catch { }
   const r = km * 1000;
-  const q = `[out:json][timeout:25];(nwr["shop"~"^(games|hobby|anime|comic|collector|video_games|toys)$"](around:${r},${lat},${lon});nwr["shop"]["name"~"Micromania|Cultura|Fnac|King Jouet|Jou[ée] ?Club|Grande R[ée]cr[ée]|Leclerc|Carrefour|Auchan|Intermarch|Hyper U|Super U|Espace Culturel",i](around:${r},${lat},${lon}););out center tags 400;`;
+  const q = `[out:json][timeout:25];(nwr["shop"~"^(games|hobby|anime|comic|collector|video_games|toys)$"](around:${r},${lat},${lon});nwr["shop"]["name"~"Micromania|Cultura|Fnac|King Jouet|Jou[ée] ?Club|Grande R[ée]cr[ée]|Leclerc|Carrefour|Auchan|Intermarch|Hyper U|Super U|Espace Culturel",i](around:${r},${lat},${lon}););out center meta 400;`;
   let j = null;
   for (const ep of OVERPASS) {
     try {
@@ -878,7 +913,8 @@ async function fetchShops(lat, lon, km) {
     const k = t.name.toLowerCase() + la.toFixed(3) + lo.toFixed(3); if (seen.has(k)) continue; seen.add(k);
     out.push({ id: el.type + el.id, name: t.name, cat, lat: la, lon: lo, dist: haversine(lat, lon, la, lo),
       addr: [[t["addr:housenumber"], t["addr:street"]].filter(Boolean).join(" "), t["addr:city"]].filter(Boolean).join(", "),
-      hours: t.opening_hours || "", web: t.website || t["contact:website"] || "", phone: t.phone || t["contact:phone"] || "" });
+      hours: t.opening_hours || "", web: t.website || t["contact:website"] || "", phone: t.phone || t["contact:phone"] || "",
+      city: t["addr:city"] || "", upd: el.timestamp || "" });
   }
   out.sort((a, b) => a.dist - b.dist);
   try { sessionStorage.setItem(key, JSON.stringify(out)); } catch { }
@@ -933,14 +969,25 @@ function renderCats() {
     if (lmap && here) drawMap(); renderShops();
   });
 }
+function shopActs(s) {
+  const q = productQuery(), br = brandOf(s.name), acts = [];
+  if (br) acts.push(`<a href="${siteSearch(br.site, q)}" target="_blank" rel="noopener">Stock sur ${esc(br.site)} ↗</a>`);
+  else acts.push(`<a href="https://www.google.com/search?q=${encodeURIComponent(`"${s.name}" ${s.city} ${q}`)}" target="_blank" rel="noopener">Chercher le produit ↗</a>`);
+  if (s.phone) acts.push(`<a href="tel:${esc(s.phone.replace(/[^+\d]/g, ""))}">Appeler</a>`);
+  return acts.join("");
+}
+const monthYear = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }); };
 function renderShops() {
-  renderCats();
+  renderCats(); renderBrandLinks();
+  if (here) $("#osmFix").href = `https://www.openstreetmap.org/note/new#map=15/${here.lat}/${here.lon}`;
   const list = shops.filter(s => catOn[s.cat]).slice(0, 60);
   $("#shopList").innerHTML = list.map(s => `<article class="shop" style="--c:${STORE_CATS[s.cat].color}">
     <h3>${esc(s.name)}</h3>
-    <div class="meta"><b>${s.dist.toFixed(1).replace(".", ",")} km</b><span>${STORE_CATS[s.cat].label}</span></div>
+    <div class="meta"><b>${s.dist.toFixed(1).replace(".", ",")} km</b><span>${STORE_CATS[s.cat].label}</span>${s.upd ? `<span>Fiche mise à jour en ${monthYear(s.upd)}</span>` : ""}</div>
     ${s.addr ? `<p>${esc(s.addr)}</p>` : ""}${s.hours ? `<p>Horaires : ${esc(s.hours)}</p>` : ""}${s.phone ? `<p>Tél. ${esc(s.phone)}</p>` : ""}
-    <div class="acts"><button type="button" data-show="${s.id}">Voir sur la carte</button>
+    <div class="acts">${shopActs(s)}</div>
+    <div class="acts sub"><button type="button" data-show="${s.id}">Voir sur la carte</button>
+      <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.name + " " + (s.addr || s.city || `${s.lat},${s.lon}`))}" target="_blank" rel="noopener">Vérifier sur Google Maps</a>
       <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}" target="_blank" rel="noopener">Itinéraire</a>
       ${/^https?:\/\//.test(s.web) ? `<a href="${esc(s.web)}" target="_blank" rel="noopener">Site</a>` : ""}</div></article>`).join("");
   $$("#shopList [data-show]").forEach(b => b.onclick = () => {
@@ -974,7 +1021,9 @@ $$(".binder-head .chip").forEach(x => x.setAttribute("aria-pressed", x.dataset.g
 $("#groupBy").value = bState.groupBy;
 $("#groupBy").querySelector('[value="jeu"]').hidden = bState.game !== "all";
 $("#showPrices").checked = bState.showPrices;
-route(); renderRel(); renderStats();
+{ const sp = store.get("cotecarte.product", null), today = new Date().toISOString().slice(0, 10);
+  $("#product").value = sp?.p ?? (RELEASES.find(r => r.d >= today) || RELEASES[0]).q; $("#ptype").value = sp?.t ?? ""; }
+route(); renderRel(); renderStats(); renderBrandLinks();
 if (!navigator.mediaDevices?.getUserMedia) {
   $("#camOff").innerHTML = "<p>Ce navigateur ne donne pas accès à la caméra en direct.</p><p class='fine'>Utilisez « Photo HD » ou tapez le numéro.</p>";
 }

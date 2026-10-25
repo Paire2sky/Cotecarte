@@ -266,6 +266,12 @@ dialog.cardsheet::backdrop{background:rgba(5,8,15,.6);backdrop-filter:blur(3px)}
 .shop .acts{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;font-weight:700}
 .shop .acts a,.shop .acts button{color:var(--accent);text-decoration:none;background:none;border:0;padding:0;font:inherit;cursor:pointer}
 .chip .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--c);margin-right:6px}
+.product-pick{display:flex;flex-direction:column;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px}
+.product-pick input{flex:1 1 auto;min-width:0;font:500 15px var(--body);padding:9px 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+.brand-links{display:flex;flex-direction:column;gap:6px}
+.brand-links .chip{text-decoration:none;display:inline-flex;align-items:center}
+.shop .acts.sub{font-weight:600;font-size:12.5px}
+.shop .acts.sub a,.shop .acts.sub button{color:var(--muted)}
 .rel .buy{color:var(--accent);font-size:12.5px;font-weight:700;text-decoration:none}
 .leaflet-container{font:13px var(--body)}
 

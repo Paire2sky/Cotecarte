@@ -129,6 +129,18 @@
 
     <section class="stores" id="stores" aria-labelledby="storesTitle">
       <h2 id="storesTitle">Autour de vous</h2>
+      <div class="product-pick">
+        <label class="cfg-label" for="product">Produit recherché</label>
+        <div class="row nowrap">
+          <input type="text" id="product" list="productList" placeholder="Ex. Règne Delta, OP-18…" autocomplete="off">
+          <select id="ptype" aria-label="Type de produit">
+            <option value="">Tout</option><option value="booster">Boosters</option><option value="coffret dresseur d'élite">ETB</option><option value="display">Display</option><option value="coffret">Coffrets</option>
+          </select>
+        </div>
+        <datalist id="productList"></datalist>
+        <p class="note">Aucune enseigne ne publie ses stocks en accès libre. Pour chaque magasin, le site ouvre la page de recherche de l'enseigne, où vous choisissez votre magasin pour voir le stock.</p>
+        <div class="brand-links" id="brandLinks"></div>
+      </div>
       <div class="locate">
         <button class="btn primary" id="locBtn" type="button">Me localiser</button>
         <form class="row nowrap" id="cityForm" autocomplete="off">
@@ -142,7 +154,7 @@
       <div class="chips" id="storeCats" role="group" aria-label="Types de magasins"></div>
       <div class="map" id="map" hidden></div>
       <div class="shop-list" id="shopList"></div>
-      <p class="fine">Les stocks ne sont pas connus : un jour de sortie, appelez avant de vous déplacer. Tournois et avant-premières : voir les localisateurs officiels ci-dessous. Données magasins © contributeurs OpenStreetMap.</p>
+      <p class="fine">Carte et magasins : OpenStreetMap, interrogé en direct à chaque recherche. Les modifications de la communauté y apparaissent en quelques minutes, mais un magasin récent peut manquer et un magasin fermé rester affiché : chaque fiche indique la date de sa dernière mise à jour et un lien Google Maps pour vérifier. <a href="#" id="osmFix" target="_blank" rel="noopener">Signaler une erreur sur la carte</a>. Données © contributeurs OpenStreetMap.</p>
       <div class="links-list">
         <a href="https://events.pokemon.com/" target="_blank" rel="noopener">Tournois et avant-premières Pokémon <span>→</span></a>
         <a href="https://en.onepiece-cardgame.com/" target="_blank" rel="noopener">Événements One Piece Card Game <span>→</span></a>
