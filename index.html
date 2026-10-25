@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cotecarte — Scanner et cote des cartes Pokémon et One Piece</title>
+<meta name="description" content="Scannez vos cartes Pokémon et One Piece avec la caméra, obtenez leur cote, rangez-les dans votre classeur et suivez les prochaines sorties.">
+<meta name="theme-color" content="#0C101B">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Manrope:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="#scan">Cotecarte</a>
+    <nav class="menu" aria-label="Navigation principale">
+      <a href="#scan" data-v="scan">Scanner</a>
+      <a href="#classeur" data-v="classeur">Classeur</a>
+      <a href="#sorties" data-v="sorties">Sorties</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- SCANNER -->
+  <section id="v-scan" class="view">
+    <div class="intro">
+      <h1>Visez le numéro, on trouve la carte.</h1>
+      <p>Pokémon et One Piece. Le numéro est lu directement dans votre navigateur, sans envoi de photo.</p>
+    </div>
+
+    <div class="scanner">
+      <div class="cam" id="cam">
+        <video id="video" playsinline muted></video>
+        <div class="guide" aria-hidden="true"><div class="strip"></div></div>
+        <div class="cam-off" id="camOff">
+          <p>La caméra est éteinte.</p>
+          <button class="btn primary" id="startCam">Allumer la caméra</button>
+          <p class="fine">Le navigateur vous demandera l'autorisation.</p>
+        </div>
+      </div>
+      <div class="cam-bar">
+        <span class="hint" id="hint">Placez la carte dans le cadre, numéro dans la bande du bas.</span>
+        <div class="row">
+          <button class="btn" id="flip" hidden>Changer de caméra</button>
+          <button class="btn primary" id="scanBtn" disabled>Lire le numéro</button>
+        </div>
+      </div>
+    </div>
+
+    <form class="search" id="search" autocomplete="off">
+      <label for="q">Ou tapez le numéro</label>
+      <div class="row">
+        <input id="q" name="q" placeholder="OP05-119, ST10-005 ou 199/165" inputmode="text">
+        <button class="btn" type="submit">Chercher</button>
+      </div>
+    </form>
+
+    <p class="status" id="status" aria-live="polite"></p>
+    <div id="results" class="results"></div>
+  </section>
+
+  <!-- CLASSEUR -->
+  <section id="v-classeur" class="view" hidden>
+    <div class="intro">
+      <h1>Mon classeur</h1>
+      <p>Enregistré sur cet appareil. Exportez-le pour le sauvegarder.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><span>Cartes</span><b id="sCount">0</b></div>
+      <div class="stat"><span>Valeur (€)</span><b id="sEur">0 €</b></div>
+      <div class="stat"><span>Valeur (US $)</span><b id="sUsd">0 $</b></div>
+    </div>
+    <div class="toolbar">
+      <div class="chips" role="group" aria-label="Filtrer par jeu">
+        <button class="chip" data-f="all" aria-pressed="true">Tout</button>
+        <button class="chip" data-f="pokemon" aria-pressed="false">Pokémon</button>
+        <button class="chip" data-f="onepiece" aria-pressed="false">One Piece</button>
+      </div>
+      <select id="sort" aria-label="Trier">
+        <option value="value">Valeur ↓</option>
+        <option value="set">Par extension</option>
+        <option value="rarity">Par rareté</option>
+        <option value="name">Nom A→Z</option>
+        <option value="recent">Ajout récent</option>
+      </select>
+    </div>
+    <div id="coll" class="grid"></div>
+    <div class="row end">
+      <button class="btn" id="refresh">Actualiser les prix</button>
+      <button class="btn" id="export">Exporter</button>
+      <label class="btn" for="import">Importer</label>
+      <input type="file" id="import" accept="application/json" hidden>
+    </div>
+  </section>
+
+  <!-- SORTIES -->
+  <section id="v-sorties" class="view" hidden>
+    <div class="intro">
+      <h1>Prochaines sorties</h1>
+      <p>Dates françaises. Mise à jour : 24 octobre 2026.</p>
+    </div>
+    <div id="rels" class="rels"></div>
+    <h2>Trouver un événement près de chez vous</h2>
+    <div class="links-list">
+      <a href="https://events.pokemon.com/" target="_blank" rel="noopener">Localisateur d'événements Pokémon <span>→</span></a>
+      <a href="https://en.onepiece-cardgame.com/" target="_blank" rel="noopener">One Piece Card Game officiel <span>→</span></a>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <p>Prix indicatifs : Cardmarket via l'API Pokémon TCG pour Pokémon, TCGplayer via OPTCG API pour One Piece. Vérifiez toujours avant d'acheter ou de vendre.</p>
+  <p>Site de fan, non affilié à Nintendo, The Pokémon Company, Bandai ou Toei Animation.</p>
+</footer>
+
+<template id="tpl-card">
+  <article class="card">
+    <img class="art" alt="" loading="lazy">
+    <div class="info">
+      <div class="tags"></div>
+      <h3 class="name"></h3>
+      <p class="code"></p>
+      <div class="price"></div>
+      <div class="actions"></div>
+    </div>
+  </article>
+</template>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
