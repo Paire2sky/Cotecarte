@@ -70,8 +70,8 @@ select{font:700 13px var(--body);padding:9px 10px;border-radius:12px;border:1px 
 .scanner{border-radius:20px;padding:2px;background:var(--foil)}
 .cam{position:relative;aspect-ratio:3/4;max-width:100%;background:#000;border-radius:18px 18px 0 0;overflow:hidden}
 .cam video{width:100%;height:100%;object-fit:cover;display:block}
-.guide{position:absolute;left:50%;top:50%;width:88%;aspect-ratio:63/88;max-height:96%;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 0 0 9999px rgba(0,0,0,.42)}
-.zone{position:absolute;left:-2px;right:-2px;top:78%;bottom:-2px;border:2px dashed rgba(60,203,221,.95);border-radius:0 0 14px 14px;background:rgba(60,203,221,.10)}
+.guide{position:absolute;left:50%;top:50%;width:76%;aspect-ratio:63/88;max-height:96%;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 0 0 9999px rgba(0,0,0,.42)}
+.zone{position:absolute;left:-2px;right:-2px;top:76%;bottom:-2px;border:2px dashed rgba(60,203,221,.95);border-radius:0 0 14px 14px;background:rgba(60,203,221,.10)}
 .cam.reading .zone{animation:pulse 1s ease-in-out infinite}
 @keyframes pulse{50%{background:rgba(60,203,221,.30)}}
 .cam-tools{position:absolute;left:10px;right:10px;top:10px;display:flex;gap:8px;align-items:center;justify-content:space-between}

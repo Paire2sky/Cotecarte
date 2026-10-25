@@ -42,15 +42,18 @@ function status(msg, err = false) { const s = $("#status"); s.textContent = msg;
 
 /* ============ Caméra ============ */
 let stream = null, track = null, cams = [], camIdx = 0;
+const SIZE = { width: { ideal: 1920 }, height: { ideal: 1440 } };
 const video = $("#video");
 async function startCam() {
   try {
     stream?.getTracks().forEach(t => t.stop());
     const pick = cams.length ? { deviceId: { exact: cams[camIdx].deviceId } } : { facingMode: { ideal: "environment" } };
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...pick, width: { ideal: 2560 }, height: { ideal: 1440 } } });
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...pick, ...SIZE } }); }
+    catch (e) { if (e?.name === "NotAllowedError") throw e; stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: pick }); }
     video.srcObject = stream; await video.play();
     track = stream.getVideoTracks()[0];
-    try { await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch { }
+    // Pas d'applyConstraints ici : sur iPhone, Safari repasse alors la caméra en 640×480 et le numéro devient illisible.
+    showCamInfo();
     $("#camOff").hidden = true; $("#scanBtn").disabled = false;
     if (!cams.length) {
       cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
@@ -78,9 +81,20 @@ function setupTools() {
 }
 $("#torch").onclick = async () => {
   const on = $("#torch").getAttribute("aria-pressed") !== "true";
-  try { await track.applyConstraints({ advanced: [{ torch: on }] }); $("#torch").setAttribute("aria-pressed", on); } catch { }
+  try { await keepSize({ torch: on }); $("#torch").setAttribute("aria-pressed", on); } catch { }
 };
-$("#zoom").oninput = e => { track?.applyConstraints({ advanced: [{ zoom: +e.target.value }] }).catch(() => { }); };
+$("#zoom").onchange = e => { keepSize({ zoom: +e.target.value }).catch(() => { }); };
+/* Toujours renvoyer la résolution avec un réglage, sinon certains navigateurs la réduisent. */
+async function keepSize(adv) {
+  const s = track.getSettings();
+  await track.applyConstraints({ width: { ideal: s.width || SIZE.width.ideal }, height: { ideal: s.height || SIZE.height.ideal }, advanced: [adv] });
+  setTimeout(showCamInfo, 400);
+}
+function showCamInfo() {
+  const w = video.videoWidth, h = video.videoHeight;
+  $("#camInfo").textContent = w ? `Caméra ${w}×${h}${Math.min(w, h) < 1000 ? " · résolution faible, préférez « Photo HD »" : ""}` : "";
+}
+video.addEventListener("resize", showCamInfo);
 $("#startCam").onclick = startCam;
 $("#flipCam").onclick = () => { camIdx = (camIdx + 1) % cams.length; startCam(); };
 
@@ -133,19 +147,21 @@ function pkHit(n, tot, setCode, lang, strong) {
   const number = /^\d+$/.test(n) ? String(+n) : n;
   return { game: "pokemon", number, total: +tot, setCode, lang, strong, code: (setCode ? setCode + " " : "") + (lang ? lang + " " : "") + `${n}/${tot}` };
 }
+const digits = s => s.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/B/g, "8").replace(/Z/g, "2");
 function parseCode(text) {
   let t = (" " + String(text).toUpperCase() + " ").replace(/[|\\]/g, "/").replace(/[–—_]/g, "-").replace(/[^A-Z0-9\/\- ]/g, " ").replace(/\s+/g, " ");
-  // Confusions fréquentes de l'OCR
+  // Confusions fréquentes de l'OCR : 0P→OP, 5T→ST, E8→EB, lettres lues à la place des chiffres
   t = t.replace(/(^|[^A-Z])0P(?=\s?[0-9O]{2})/g, "$1OP").replace(/(^|[^A-Z])5T(?=\s?[0-9O]{2})/g, "$1ST")
        .replace(/(^|[^A-Z])E8(?=\s?[0-9O]{2})/g, "$1EB").replace(/PR8/g, "PRB");
-  t = t.replace(/(OP|ST|EB|PRB)(\s?-?\s?)([0-9OISB]{2})(\s?-\s?)([0-9OISBZ]{3})/g,
-    (_, a, b, c, d, e) => a + b + c.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/B/g, "8") + d + e.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/B/g, "8").replace(/Z/g, "2"));
-  t = t.replace(/(^|[ \-])([0-9OISBZ]{1,3})(\s?\/\s?)([0-9OISBZ]{2,3})(?=[ \-]|$)/g,
-    (_, p, a, s, b) => p + a.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/B/g, "8").replace(/Z/g, "2") + s + b.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/B/g, "8").replace(/Z/g, "2"));
-  let m = t.match(/(OP|ST|EB|PRB)\s?-?\s?(\d{2})\s?-\s?(\d{3})/);
+  t = t.replace(/(OP|ST|EB|PRB)(\s?-?\s?)([0-9OISB]{2})(\s?-?\s?)([0-9OISBZ]{3})/g, (_, a, b, c, d, e) => a + b + digits(c) + d + digits(e));
+  t = t.replace(/(\s[A-Z]{3}\s?(?:EN|FR|DE|IT|ES|PT)\s?)([0-9OISBZ]{1,3}\s?\/?\s?[0-9OISBZ]{2,3})(?=[ \-]|$)/g, (_, a, b) => a + digits(b));
+  t = t.replace(/(^|[ \-])([0-9OISBZ]{1,3})(\s?\/\s?)([0-9OISBZ]{2,3})(?=[ \-]|$)/g, (_, p, a, sl, b) => p + digits(a) + sl + digits(b));
+  // One Piece : « OP05-119 » (le tiret est parfois perdu)
+  let m = t.match(/(OP|ST|EB|PRB)\s?-?\s?(\d{2})\s?-?\s?(\d{3})(?!\d)/);
   if (m) return { game: "onepiece", code: `${m[1]}${m[2]}-${m[3]}`, strong: true };
-  // Pokémon récent : « SVI FR 199/198 »
-  m = t.match(/(?:^|\s)([A-Z]{3})\s?(EN|FR|DE|IT|ES|PT)\s?((?:TG|GG|SV)?\d{1,3})\s?\/\s?(?:TG|GG|SV)?(\d{2,3})(?=\D|$)/);
+  // Pokémon récent : « SVI FR 199/198 » (la barre est souvent perdue : « 199198 »)
+  m = t.match(/(?:^|\s)([A-Z]{3})\s?(EN|FR|DE|IT|ES|PT)\s?((?:TG|GG|SV)?\d{1,3})\s?\/\s?(?:TG|GG|SV)?(\d{2,3})(?=\D|$)/)
+    || t.match(/(?:^|\s)([A-Z]{3})\s?(EN|FR|DE|IT|ES|PT)\s?(\d{3})\s?(\d{3})(?=\D|$)/);
   if (m && validPk(m[3], m[4])) return pkHit(m[3], m[4], m[1], m[2], true);
   m = t.match(/(?:^|[^A-Z0-9])((?:TG|GG|SV)?\d{1,3})\s?\/\s?(?:TG|GG|SV)?(\d{2,3})(?=\D|$)/);
   if (m && validPk(m[1], m[2])) return pkHit(m[1], m[2], "", "", false);
@@ -157,7 +173,7 @@ function confirmRead(hit) {
   const key = hit.game + hit.code; reads.push(key); reads = reads.slice(-6);
   return reads.filter(k => k === key).length >= 2;
 }
-function showRaw(raw) { $("#ocrRaw").textContent = raw ? "Lu : " + raw.replace(/\s+/g, " ").trim().slice(0, 60) : ""; }
+function showRaw(raw, clear) { const r = String(raw || "").replace(/\s+/g, " ").trim(); if (r || clear) $("#ocrRaw").textContent = r ? "Lu : " + r.slice(0, 60) : ""; }
 function guideInVideo() {
   const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !vh) return null;
   const vb = video.getBoundingClientRect(), gb = $("#guide").getBoundingClientRect();
@@ -174,11 +190,13 @@ async function readLoop() {
       tries++;
       const g = guideInVideo();
       if (g) {
-        const sx = Math.max(0, g.x - g.w * 0.03), sw = Math.min(g.vw - sx, g.w * 1.06);
-        const sy = Math.max(0, g.y + g.h * 0.76), sh = Math.min(g.vh - sy, g.h * 0.28);
+        // 4 passages sur 5 : bande du bas du cadre. 1 sur 5 : toute la moitié basse de l'image, si la carte n'est pas bien placée.
+        const wideZone = tries % 5 === 0;
+        const sx = wideZone ? 0 : Math.max(0, g.x - g.w * 0.05), sw = wideZone ? g.vw : Math.min(g.vw - sx, g.w * 1.1);
+        const sy = wideZone ? Math.max(0, g.y + g.h * 0.35) : Math.max(0, g.y + g.h * 0.72), sh = Math.min(g.vh - sy, wideZone ? g.h * 0.8 : g.h * 0.34);
         if (sw > 10 && sh > 10) {
-          const { data } = await w.recognize(prep(video, sx, sy, sw, sh, mode));
-          mode = (mode + 1) % 3;
+          const { data } = await w.recognize(prep(video, sx, sy, sw, sh, wideZone ? 0 : mode, wideZone ? 1600 : 1800));
+          if (!wideZone) mode = (mode + 1) % 3;
           if (!reading) return;
           showRaw(data.text);
           const hit = parseCode(data.text || "");
@@ -199,7 +217,7 @@ $("#scanBtn").onclick = () => {
   reading = true; $("#scanBtn").textContent = "Arrêter"; readLoop();
 };
 function found(hit) {
-  stopReading(); showRaw("");
+  stopReading(); showRaw("", true);
   if (navigator.vibrate) navigator.vibrate(60);
   status(`Numéro lu : ${hit.code}`);
   lookup(hit);
