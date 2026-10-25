@@ -547,7 +547,7 @@ function buildBinder(keep = false) {
   const start = Math.min(keepAt ?? 0, bookPages.length - 1);
   book = new St.PageFlip($("#book"), {
     width: 400, height: 584, size: "stretch", minWidth: 240, maxWidth: 460, minHeight: 350, maxHeight: 672,
-    showCover: true, usePortrait: true, mobileScrollSupport: true, drawShadow: true, maxShadowOpacity: 0.55,
+    showCover: true, usePortrait: true, mobileScrollSupport: true, useMouseEvents: false, drawShadow: true, maxShadowOpacity: 0.55,
     flippingTime: reduceMotion.matches ? 250 : 900, disableFlipByClick: true, clickEventForward: false, swipeDistance: 25,
     startPage: start, autoSize: true, showPageCorners: true
   });
@@ -557,24 +557,75 @@ function buildBinder(keep = false) {
   book.on("init", () => setTimeout(afterFlip, 30));
   book.loadFromHTML($$("#book .page"));
   patchRelease(book);
+  bindGestures(book);
   curPage = book.getCurrentPageIndex();
   setTimeout(afterFlip, 60);
 }
-/* Sur téléphone (une page à la fois), la bibliothèque exige de tirer le coin jusqu'au bord gauche.
-   On termine la page dès qu'elle est tirée au quart, comme avec un vrai classeur. */
+/* Lâcher une page : elle se termine dès qu'elle est tirée d'un quart, ou après un geste rapide (comme un vrai classeur).
+   Par défaut, la bibliothèque exige de tirer le coin au-delà de la reliure. */
+let fling = false;
 function patchRelease(b) {
   const fc = b.flipController;
   if (!fc?.stopMove || !fc.animateFlippingTo) return;
   const orig = fc.stopMove.bind(fc);
   fc.stopMove = function () {
+    const quick = fling; fling = false;
     try {
-      if (this.calc && b.getOrientation() === "portrait" && this.calc.getFlippingProgress() > 25) {
-        const pos = this.calc.getPosition(), rect = this.getBoundsRect(), y = this.calc.getCorner() === "bottom" ? rect.height : 0;
-        return this.animateFlippingTo(pos, { x: -rect.pageWidth, y }, true);
+      if (this.calc) {
+        const prog = this.calc.getFlippingProgress(), need = b.getOrientation() === "portrait" ? 15 : 22;
+        if (prog > need || (quick && prog > 3)) {
+          const pos = this.calc.getPosition(), rect = this.getBoundsRect(), y = this.calc.getCorner() === "bottom" ? rect.height : 0;
+          return this.animateFlippingTo(pos, { x: -rect.pageWidth, y }, true);
+        }
       }
     } catch { }
     return orig();
   };
+}
+/* Gestes faits maison (Pointer Events) : les gestes tactiles intégrés à la bibliothèque échouent sur iPhone,
+   où Safari s'approprie le geste dès qu'il bouge un peu à la verticale. La page suit le doigt depuis son bord. */
+function bindGestures(b) {
+  const blk = $("#binder .stf__block"); if (!blk) return;
+  let g = null;
+  const local = e => { const rc = blk.getBoundingClientRect(); return { x: e.clientX - rc.left, y: e.clientY - rc.top }; };
+  blk.addEventListener("pointerdown", e => {
+    if (e.button > 0 || book !== b) return;
+    g = { id: e.pointerId, p0: local(e), t0: performance.now(), started: false };
+    if (e.pointerType === "mouse") e.preventDefault();
+  });
+  blk.addEventListener("pointermove", e => {
+    if (book !== b) return;
+    const p = local(e);
+    if (!g) { if (e.pointerType === "mouse" && !e.buttons) b.userMove(p, false); return; }
+    if (e.pointerId !== g.id) return;
+    const dx = p.x - g.p0.x, dy = p.y - g.p0.y;
+    if (!g.started) {
+      if (Math.abs(dy) > 22 && Math.abs(dy) > Math.abs(dx) * 1.3) { g = null; return; } // geste vertical : on laisse défiler
+      if (Math.abs(dx) < 8) return;
+      const fwd = dx < 0;
+      if (fwd ? curPage >= bookPages.length - 1 : curPage <= 0) { g = null; return; }
+      const r = b.getBoundsRect(), portrait = b.getOrientation() === "portrait";
+      const x = fwd ? r.left + r.width - 2 : r.left + (portrait ? r.pageWidth : 0) + 2;
+      g.edge = { x, y: Math.min(Math.max(g.p0.y, r.top + 4), r.top + r.height - 4) };
+      g.started = true;
+      try { blk.setPointerCapture(e.pointerId); } catch { }
+      b.startUserTouch(g.edge);
+    }
+    b.userMove({ x: g.edge.x + dx * 1.15, y: g.edge.y + dy * 0.35 }, true);
+  });
+  const finish = (e, cancelled) => {
+    if (!g || e.pointerId !== g.id) return;
+    if (g.started) {
+      const p = local(e), dx = p.x - g.p0.x;
+      fling = !cancelled && performance.now() - g.t0 < 450 && Math.abs(dx) > 30;
+      b.userStop({ x: g.edge.x + dx * 1.15, y: g.edge.y }, false);
+      lastTurnAt = Date.now();
+    }
+    g = null;
+  };
+  blk.addEventListener("pointerup", e => finish(e, false));
+  blk.addEventListener("pointercancel", e => finish(e, true));
+  blk.addEventListener("pointerleave", e => { if (!g && e.pointerType === "mouse") b.userMove({ x: -1e4, y: -1e4 }, false); });
 }
 function afterFlip() {
   if (!book) return;
@@ -806,14 +857,21 @@ function catOf(t) {
   if (/leclerc|carrefour|auchan|intermarch|hyper u|super u/i.test(n)) return /city|express|proxi|contact|drive|station|location|bio|montagne/i.test(n) ? null : "gms";
   return null;
 }
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
 async function fetchShops(lat, lon, km) {
   const key = `cotecarte.shops.${lat.toFixed(3)},${lon.toFixed(3)},${km}`;
   try { const c = JSON.parse(sessionStorage.getItem(key) || "null"); if (c) return c; } catch { }
   const r = km * 1000;
   const q = `[out:json][timeout:25];(nwr["shop"~"^(games|hobby|anime|comic|collector|video_games|toys)$"](around:${r},${lat},${lon});nwr["shop"]["name"~"Micromania|Cultura|Fnac|King Jouet|Jou[ée] ?Club|Grande R[ée]cr[ée]|Leclerc|Carrefour|Auchan|Intermarch|Hyper U|Super U|Espace Culturel",i](around:${r},${lat},${lon}););out center tags 400;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
-  if (!res.ok) throw new Error("overpass " + res.status);
-  const j = await res.json(), out = [], seen = new Set();
+  let j = null;
+  for (const ep of OVERPASS) {
+    try {
+      const res = await fetch(ep, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
+      if (res.ok) { j = await res.json(); break; }
+    } catch { }
+  }
+  if (!j) throw new Error("overpass");
+  const out = [], seen = new Set();
   for (const el of j.elements || []) {
     const t = el.tags || {}, cat = catOf(t); if (!cat || !t.name) continue;
     const la = el.lat ?? el.center?.lat, lo = el.lon ?? el.center?.lon; if (la == null) continue;
@@ -830,19 +888,21 @@ function storeStatus(msg, err) { const s = $("#storeStatus"); s.textContent = ms
 function loadLeaflet() {
   if (window.L) return Promise.resolve();
   return new Promise((ok, ko) => {
-    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"; document.head.append(css);
-    const js = document.createElement("script"); js.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"; js.onload = ok; js.onerror = ko; document.head.append(js);
+    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"; document.head.append(css);
+    const js = document.createElement("script"); js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"; js.onload = ok; js.onerror = ko; document.head.append(js);
   });
 }
 async function searchAround(lat, lon, label) {
   here = { lat: +lat.toFixed(3), lon: +lon.toFixed(3), label }; store.set("cotecarte.here", here);
   const km = +$("#radius").value;
   storeStatus(`Recherche des magasins dans un rayon de ${km} km${label ? " autour de " + label : ""}…`);
-  try {
-    shops = await fetchShops(here.lat, here.lon, km);
-  } catch { storeStatus("Le service de cartes OpenStreetMap ne répond pas. Réessayez dans une minute.", true); return; }
-  storeStatus(shops.length ? `${shops.length} magasin${shops.length > 1 ? "s" : ""} trouvé${shops.length > 1 ? "s" : ""} dans un rayon de ${km} km.` : `Aucun magasin trouvé dans un rayon de ${km} km. Élargissez le rayon.`, !shops.length);
-  try { await loadLeaflet(); drawMap(); } catch { $("#map").hidden = true; }
+  let failed = false;
+  try { shops = await fetchShops(here.lat, here.lon, km); } catch { shops = []; failed = true; }
+  const msg = failed ? "Le service des magasins (OpenStreetMap) ne répond pas. Réessayez dans une minute."
+    : shops.length ? `${shops.length} magasin${shops.length > 1 ? "s" : ""} trouvé${shops.length > 1 ? "s" : ""} dans un rayon de ${km} km.` : `Aucun magasin trouvé dans un rayon de ${km} km. Élargissez le rayon.`;
+  storeStatus(msg, failed || !shops.length);
+  try { await loadLeaflet(); drawMap(); }
+  catch { $("#map").hidden = true; storeStatus(msg + " La carte n'a pas pu s'afficher, la liste reste disponible.", true); }
   renderShops();
 }
 function drawMap() {
