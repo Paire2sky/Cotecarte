@@ -10,8 +10,8 @@ Site de scan et de cote des cartes Pokémon et One Piece.
 - **Cote** :
   - Pokémon : prix Cardmarket en euros, via l'API Pokémon TCG (gratuite, sans clé).
   - One Piece : prix TCGplayer en dollars, via OPTCG API (gratuite, sans clé).
-- **Classeur virtuel** : couverture, pages de 9 pochettes, anneaux, pages qui tournent (glisser ou flèches), intercalaires colorés. Rangement par série, type ou couleur, rareté, valeur, langue ou jeu ; classeurs Tout, Pokémon et One Piece. Une fiche par carte permet de modifier la langue, le prix et la quantité. Les prix saisis à la main ne sont pas écrasés par « Actualiser les prix ». Le classeur est enregistré sur l'appareil, avec export et import.
-- **Sorties** : calendrier avec compte à rebours. La liste se met à jour dans `app.js`, tableau `RELEASES`.
+- **Classeur virtuel** : tourne-page réaliste (bibliothèque StPageFlip) : la page se courbe et suit le doigt ou la souris, couvertures rigides, sommaire, anneaux, intercalaires colorés. Rangement par série, type ou couleur, rareté, valeur, langue ou jeu ; classeurs Tout, Pokémon et One Piece. « Personnaliser » règle le nom, la couleur et la matière de la couverture, les pages claires ou sombres, et le contour des pochettes (ambiance de la section, or, argent, holographique ou couleur au choix). Une fiche par carte permet de modifier la langue, le prix et la quantité. Classeur enregistré sur l'appareil, avec export et import.
+- **Sorties et magasins** : calendrier avec compte à rebours (tableau `RELEASES` dans `app.js`). « Me localiser », ou une ville, affiche sur une carte (Leaflet + OpenStreetMap) les boutiques spécialisées, magasins de jeux vidéo, enseignes culturelles, magasins de jouets et grandes surfaces dans un rayon de 5, 10 ou 25 km, via l'API Overpass. Ville trouvée via Nominatim.
 
 ## Mise en ligne gratuite
 

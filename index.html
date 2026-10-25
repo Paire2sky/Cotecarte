@@ -79,6 +79,7 @@
         <button class="chip" data-game="onepiece" aria-pressed="false" type="button">One Piece</button>
       </div>
       <div class="row nowrap">
+        <button class="btn small" id="styleBtn" type="button">Personnaliser</button>
         <label class="sortby" for="groupBy">Ranger par</label>
         <select id="groupBy">
           <option value="serie">Série</option>
@@ -93,16 +94,14 @@
 
     <nav class="dividers" id="dividers" aria-label="Intercalaires"></nav>
 
-    <div class="binder" id="binder">
-      <div class="spread" id="spread"></div>
-    </div>
+    <div class="binder" id="binder" aria-label="Classeur"></div>
 
     <div class="pager">
       <button class="btn small" id="prev" type="button" aria-label="Page précédente">‹</button>
       <span id="pageNum"></span>
       <button class="btn small" id="next" type="button" aria-label="Page suivante">›</button>
     </div>
-    <p class="fine center">Glissez sur le classeur ou utilisez les flèches pour tourner les pages. Touchez une carte pour la modifier.</p>
+    <p class="fine center">Attrapez un coin de page et tirez pour la tourner, ou glissez du doigt. Touchez une carte pour la modifier.</p>
 
     <div class="stats">
       <div class="stat"><span>Cartes</span><b id="sCount">0</b></div>
@@ -118,18 +117,37 @@
     </div>
   </section>
 
-  <!-- SORTIES -->
+  <!-- SORTIES ET MAGASINS -->
   <section id="v-sorties" class="view" hidden>
     <div class="intro">
-      <h1>Prochaines sorties</h1>
-      <p>Dates françaises. Mise à jour : 25 octobre 2026.</p>
+      <h1>Sorties et magasins</h1>
+      <p>Les prochaines sorties en France, et les boutiques autour de vous qui vendent des cartes.</p>
     </div>
+    <h2>Prochaines sorties</h2>
+    <p class="fine">Dates françaises. Mise à jour : 25 octobre 2026.</p>
     <div id="rels" class="rels"></div>
-    <h2>Trouver un événement près de chez vous</h2>
-    <div class="links-list">
-      <a href="https://events.pokemon.com/" target="_blank" rel="noopener">Localisateur d'événements Pokémon <span>→</span></a>
-      <a href="https://en.onepiece-cardgame.com/" target="_blank" rel="noopener">One Piece Card Game officiel <span>→</span></a>
-    </div>
+
+    <section class="stores" id="stores" aria-labelledby="storesTitle">
+      <h2 id="storesTitle">Autour de vous</h2>
+      <div class="locate">
+        <button class="btn primary" id="locBtn" type="button">Me localiser</button>
+        <form class="row nowrap" id="cityForm" autocomplete="off">
+          <input type="text" id="city" placeholder="Ou une ville, un code postal" aria-label="Ville ou code postal">
+          <button class="btn small" type="submit">OK</button>
+        </form>
+        <label class="sortby" for="radius">Rayon</label>
+        <select id="radius"><option value="5">5 km</option><option value="10" selected>10 km</option><option value="25">25 km</option></select>
+      </div>
+      <p class="status" id="storeStatus" aria-live="polite"></p>
+      <div class="chips" id="storeCats" role="group" aria-label="Types de magasins"></div>
+      <div class="map" id="map" hidden></div>
+      <div class="shop-list" id="shopList"></div>
+      <p class="fine">Les stocks ne sont pas connus : un jour de sortie, appelez avant de vous déplacer. Tournois et avant-premières : voir les localisateurs officiels ci-dessous. Données magasins © contributeurs OpenStreetMap.</p>
+      <div class="links-list">
+        <a href="https://events.pokemon.com/" target="_blank" rel="noopener">Tournois et avant-premières Pokémon <span>→</span></a>
+        <a href="https://en.onepiece-cardgame.com/" target="_blank" rel="noopener">Événements One Piece Card Game <span>→</span></a>
+      </div>
+    </section>
   </section>
 </main>
 
@@ -141,6 +159,7 @@
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

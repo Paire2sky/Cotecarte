@@ -8,7 +8,6 @@ const money = (n, cur = "EUR") => n == null || isNaN(n) ? "—" :
   new Intl.NumberFormat("fr-FR", { style: "currency", currency: cur, maximumFractionDigits: n < 10 ? 2 : 0 }).format(n);
 const num = v => (v == null || v === "" || isNaN(+v)) ? null : +v;
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
-const wideMQ = matchMedia("(min-width: 900px)");
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } } };
 
@@ -31,11 +30,17 @@ const OP_COLORS = { Red: ["Rouge", "#D7263D"], Green: ["Vert", "#2E9E5B"], Blue:
 /* ============ Navigation ============ */
 const VIEWS = ["scan", "classeur", "sorties"];
 function route() {
-  const v = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "scan";
+  const h = location.hash.slice(1);
+  const v = h === "magasins" ? "sorties" : VIEWS.includes(h) ? h : "scan";
   VIEWS.forEach(k => $("#v-" + k).hidden = k !== v);
   $$(".menu a").forEach(a => a.dataset.v === v ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
   if (v !== "scan") stopReading();
-  if (v === "classeur") { buildBinder(); autoEnrich(); }
+  if (v === "classeur") { buildBinder(true); autoEnrich(); }
+  if (v === "sorties") {
+    renderCats();
+    if (here && !shops.length) searchAround(here.lat, here.lon, here.label);
+    if (h === "magasins") setTimeout(() => $("#stores").scrollIntoView({ block: "start", behavior: reduceMotion.matches ? "auto" : "smooth" }), 50);
+  }
 }
 window.addEventListener("hashchange", route);
 function status(msg, err = false) { const s = $("#status"); s.textContent = msg; s.classList.toggle("err", err); }
@@ -444,11 +449,31 @@ function withinGroup(by) {
   return (a, b) => (a.game.localeCompare(b.game)) || String(a.setDate || a.setCode || "").localeCompare(String(b.setDate || b.setCode || "")) || (numPart(a) - numPart(b)) || a.name.localeCompare(b.name, "fr");
 }
 
-/* ============ Classeur virtuel ============ */
+/* ============ Classeur virtuel (tourne-page réaliste : StPageFlip) ============ */
 const bState = Object.assign({ game: "all", groupBy: "serie", showPrices: true }, store.get("cotecarte.binder", {}));
-let seq = [], groups = [], pos = 0, flipping = false, contentOffset = 1, wasWide = wideMQ.matches;
 const PER_PAGE = 9;
+let groups = [], book = null, bookPages = [], curPage = 0, bookState = "read", lastTurnAt = 0;
+const DEFAULT_STYLE = {
+  all: { cover: "#1E2433", texture: "cuir", pages: "sombre", edge: "ambiance", edgeColor: "#3CCBDD", title: "" },
+  pokemon: { cover: "#1F3A7A", texture: "cuir", pages: "sombre", edge: "ambiance", edgeColor: "#F5C83A", title: "" },
+  onepiece: { cover: "#6E1C2B", texture: "cuir", pages: "sombre", edge: "ambiance", edgeColor: "#F2C14E", title: "" }
+};
+let styles = store.get("cotecarte.styles", {});
+const curStyle = () => ({ ...DEFAULT_STYLE[bState.game], ...(styles[bState.game] || {}) });
 function saveBState() { store.set("cotecarte.binder", { game: bState.game, groupBy: bState.groupBy, showPrices: bState.showPrices }); }
+function inkFor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || ""); if (!m) return "#EEF1F7";
+  const n = parseInt(m[1], 16), r = n >> 16 & 255, g = n >> 8 & 255, b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? "#14171F" : "#EEF1F7";
+}
+function applyStyleVars() {
+  const st = curStyle(), el = $("#binder");
+  el.style.setProperty("--cv", st.cover);
+  el.style.setProperty("--cv-ink", inkFor(st.cover));
+  el.style.setProperty("--cv-hi", GAME[bState.game].hi);
+  el.style.setProperty("--edge-c", st.edgeColor);
+  el.className = `binder pages-${st.pages} edge-${st.edge}`;
+}
 function buildPages() {
   const items = coll.filter(c => bState.game === "all" || c.game === bState.game);
   const map = new Map();
@@ -465,49 +490,28 @@ function buildPages() {
   pages.forEach((p, i) => { p.num = i + 1; p.total = pages.length; });
   return pages;
 }
-function buildBinder(keep = false) {
-  const wide = wideMQ.matches;
-  const prevContent = keep ? currentContentIndex() : null;
-  const pages = buildPages();
-  const content = pages.length ? pages : [{ kind: "empty" }];
-  seq = wide ? [{ kind: "void" }, { kind: "cover" }, { kind: "inner" }, ...content] : [{ kind: "cover" }, ...content];
-  if (wide && seq.length % 2) seq.push({ kind: "blank" });
-  contentOffset = wide ? 3 : 1;
-  if (prevContent != null && prevContent >= 0) pos = posForSeq(contentOffset + Math.min(prevContent, content.length - 1));
-  else pos = Math.min(pos, maxPos());
-  wasWide = wide;
-  renderSpread(); renderDividers(); renderStats();
-}
-const maxPos = () => wideMQ.matches ? seq.length / 2 - 1 : seq.length - 1;
-const posForSeq = i => wideMQ.matches ? Math.floor(i / 2) : i;
-function currentContentIndex() { const i = (wasWide ? pos * 2 + 1 : pos) - (wasWide ? 3 : 1); return i < 0 ? -1 : i; }
-function coverHTML() {
-  const g = GAME[bState.game], items = coll.filter(c => bState.game === "all" || c.game === bState.game);
+function coverHTML(st) {
+  const items = coll.filter(c => bState.game === "all" || c.game === bState.game);
   const n = items.reduce((s, c) => s + c.qty, 0);
-  return `<div class="pg cover" style="--cv:${g.cover};--cv-hi:${g.hi}" role="button" tabindex="0" aria-label="Ouvrir le classeur">
-    <div class="cover-in"><span class="cover-brand">Cotecarte</span><span class="cover-title">${esc(g.title)}</span>
-    <span class="cover-sub">${n} carte${n > 1 ? "s" : ""} · ${groups.length} intercalaire${groups.length > 1 ? "s" : ""}</span><span class="cover-open">Toucher pour ouvrir</span></div><div class="strap"></div></div>`;
+  return `<div class="pg cover tex-${st.texture}"><div class="cover-btn" role="button" tabindex="0" data-open="1" aria-label="Ouvrir le classeur">
+    <span class="cover-brand">Cotecarte</span><span class="cover-title">${esc(st.title || GAME[bState.game].title)}</span>
+    <span class="cover-sub">${n} carte${n > 1 ? "s" : ""} · ${groups.length} intercalaire${groups.length > 1 ? "s" : ""}</span><span class="cover-open">Ouvrir</span></div><div class="strap"></div></div>`;
 }
-function innerHTML() {
-  const g = GAME[bState.game];
-  return `<div class="pg inner" style="--cv:${g.cover}"><h3>Sommaire</h3><ol class="toc">${groups.slice(0, 18).map(x =>
+function innerHTML(st) {
+  return `<div class="pg inner tex-${st.texture}"><h3>Sommaire</h3><ol class="toc">${groups.slice(0, 16).map(x =>
     `<li style="--c:${x.color}"><i></i><span>${esc(x.label)}</span><b>p. ${x.firstPage + 1}</b></li>`).join("") || "<li><span>Aucune carte pour l'instant.</span></li>"}
-    ${groups.length > 18 ? `<li><span>… et ${groups.length - 18} autres</span></li>` : ""}</ol></div>`;
+    ${groups.length > 16 ? `<li><span>… et ${groups.length - 16} autres</span></li>` : ""}</ol></div>`;
 }
 function pocketHTML(c) {
   const price = c.price == null ? "" : money(c.price, c.currency);
-  return `<button class="pocket" type="button" data-id="${esc(c.id)}" aria-label="${esc(c.name)}${c.lang ? " " + c.lang : ""}${price ? ", " + price : ""}">
+  return `<div class="pocket" role="button" tabindex="0" data-id="${esc(c.id)}" aria-label="${esc(c.name)}${c.lang ? " " + c.lang : ""}${price ? ", " + price : ""}">
     <span class="pname">${esc(c.name)}</span><img src="${esc(c.img)}" alt="" loading="lazy" draggable="false" onerror="this.remove()">
-    ${c.qty > 1 ? `<span class="qtyb">×${c.qty}</span>` : ""}${bState.showPrices && price ? `<span class="pp">${price}${c.lang && c.lang !== "FR" ? " · " + c.lang : ""}</span>` : ""}</button>`;
+    ${c.qty > 1 ? `<span class="qtyb">×${c.qty}</span>` : ""}${bState.showPrices && price ? `<span class="pp">${price}${c.lang && c.lang !== "FR" ? " · " + c.lang : ""}</span>` : ""}</div>`;
 }
-function pageHTML(p, side = "right") {
-  if (!p || p.kind === "blank") return `<div class="pg sheet ${side}"><div></div><div class="pockets">${'<div class="pocket empty"></div>'.repeat(PER_PAGE)}</div><div></div></div>`;
-  if (p.kind === "void") return `<div class="pg void"></div>`;
-  if (p.kind === "cover") return coverHTML();
-  if (p.kind === "inner") return innerHTML();
-  if (p.kind === "back") return backHTML(p.of);
+function sheetHTML(p, side) {
+  if (p.kind === "blank") return `<div class="pg sheet ${side}"><div></div><div class="pockets">${'<div class="pocket empty"></div>'.repeat(PER_PAGE)}</div><div></div></div>`;
   if (p.kind === "empty") return `<div class="pg sheet ${side} empty-page"><strong>Classeur vide</strong><p>Scannez une carte, choisissez sa version et sa langue, puis « Ajouter au classeur ».</p><a class="btn primary small" href="#scan">Scanner une carte</a></div>`;
-  const g = p.g, slots = [...p.items.map(pocketHTML)];
+  const g = p.g, slots = p.items.map(pocketHTML);
   while (slots.length < PER_PAGE) slots.push('<div class="pocket empty"></div>');
   return `<div class="pg sheet ${side}" style="--tab:${g.color}">
     ${p.first ? `<div class="tab" style="top:${6 + (p.gi % 5) * 18}%"><span>${esc(g.label)}</span></div>` : ""}
@@ -515,145 +519,157 @@ function pageHTML(p, side = "right") {
     <div class="pockets">${slots.join("")}</div>
     <footer class="pg-foot">${p.num} / ${p.total}</footer></div>`;
 }
-/* Verso d'une feuille : on voit le dos des cartes, en miroir. */
-function backHTML(p) {
-  if (!p) return pageHTML({ kind: "blank" }, "left");
-  if (p.kind === "cover") return innerHTML();
-  if (p.kind !== "page") return pageHTML({ kind: "blank" }, "left");
-  const cells = [];
-  for (let r = 0; r < 3; r++) for (let col = 2; col >= 0; col--) cells.push(p.items[r * 3 + col] ? '<div class="pocket cb"></div>' : '<div class="pocket empty"></div>');
-  return `<div class="pg sheet left"><div></div><div class="pockets">${cells.join("")}</div><div></div></div>`;
+/* Ordre du livre : couverture, sommaire (dos de la couverture), feuilles, dos intérieur, dos. Nombre pair pour que le dos soit seul. */
+function bookHTML() {
+  const st = curStyle(), pages = buildPages();
+  const content = pages.length ? pages : [{ kind: "empty" }];
+  if (content.length % 2) content.push({ kind: "blank" });
+  bookPages = [{ kind: "cover" }, { kind: "inner" }, ...content, { kind: "innerEnd" }, { kind: "back" }];
+  return bookPages.map((p, i) => {
+    const side = i % 2 ? "left" : "right";
+    if (p.kind === "cover") return `<div class="page" data-density="hard">${coverHTML(st)}</div>`;
+    if (p.kind === "inner") return `<div class="page" data-density="hard">${innerHTML(st)}</div>`;
+    if (p.kind === "innerEnd") return `<div class="page" data-density="hard"><div class="pg inner end tex-${st.texture}"><span class="cover-brand">Fin du classeur</span></div></div>`;
+    if (p.kind === "back") return `<div class="page" data-density="hard"><div class="pg cover-back tex-${st.texture}"><span>Cotecarte</span></div></div>`;
+    return `<div class="page">${sheetHTML(p, side)}</div>`;
+  }).join("");
 }
-function renderSpread() {
-  const sp = $("#spread"), wide = wideMQ.matches;
-  if (wide) {
-    sp.className = "spread wide" + (pos === 0 ? " closed" : "");
-    sp.innerHTML = `<div class="slot left">${pageHTML(seq[2 * pos], "left")}</div><div class="slot right">${pageHTML(seq[2 * pos + 1], "right")}</div><div class="spine"></div><div class="rings"><i></i><i></i><i></i></div>`;
-  } else {
-    sp.className = "spread";
-    sp.innerHTML = `<div class="slot right">${pageHTML(seq[pos], "right")}</div>${pos > 0 ? '<div class="rings"><i></i><i></i><i></i></div>' : ""}`;
+function buildBinder(keep = false) {
+  const keepAt = keep && book ? curPage : null;
+  if (book) { try { book.destroy(); } catch { } book = null; }
+  const host = $("#binder");
+  host.innerHTML = `<div class="book" id="book">${bookHTML()}</div><div class="rings" id="rings" hidden><i></i><i></i><i></i></div>`;
+  applyStyleVars(); renderDividers(); renderStats();
+  if (!window.St?.PageFlip) {
+    host.innerHTML = `<p class="binder-fallback">Le classeur n'a pas pu se charger. Vérifiez votre connexion puis rechargez la page.</p>`;
+    return;
   }
-  updatePager();
+  const start = Math.min(keepAt ?? 0, bookPages.length - 1);
+  book = new St.PageFlip($("#book"), {
+    width: 400, height: 584, size: "stretch", minWidth: 240, maxWidth: 460, minHeight: 350, maxHeight: 672,
+    showCover: true, usePortrait: true, mobileScrollSupport: true, drawShadow: true, maxShadowOpacity: 0.55,
+    flippingTime: reduceMotion.matches ? 250 : 900, disableFlipByClick: true, clickEventForward: false, swipeDistance: 25,
+    startPage: start, autoSize: true, showPageCorners: true
+  });
+  book.on("flip", e => { curPage = e.data; afterFlip(); });
+  book.on("changeState", e => { if (/flipping|user_fold/.test(e.data + " " + bookState)) lastTurnAt = Date.now(); bookState = e.data; });
+  book.on("changeOrientation", () => setTimeout(afterFlip, 30));
+  book.on("init", () => setTimeout(afterFlip, 30));
+  book.loadFromHTML($$("#book .page"));
+  patchRelease(book);
+  curPage = book.getCurrentPageIndex();
+  setTimeout(afterFlip, 60);
 }
-function updatePager() {
-  const wide = wideMQ.matches, max = maxPos();
-  $("#prev").disabled = pos <= 0 || flipping; $("#next").disabled = pos >= max || flipping;
-  const total = seq.filter(p => p.kind === "page").length;
-  const shown = (wide ? [seq[2 * pos], seq[2 * pos + 1]] : [seq[pos]]).filter(p => p?.kind === "page").map(p => p.num);
+/* Sur téléphone (une page à la fois), la bibliothèque exige de tirer le coin jusqu'au bord gauche.
+   On termine la page dès qu'elle est tirée au quart, comme avec un vrai classeur. */
+function patchRelease(b) {
+  const fc = b.flipController;
+  if (!fc?.stopMove || !fc.animateFlippingTo) return;
+  const orig = fc.stopMove.bind(fc);
+  fc.stopMove = function () {
+    try {
+      if (this.calc && b.getOrientation() === "portrait" && this.calc.getFlippingProgress() > 25) {
+        const pos = this.calc.getPosition(), rect = this.getBoundsRect(), y = this.calc.getCorner() === "bottom" ? rect.height : 0;
+        return this.animateFlippingTo(pos, { x: -rect.pageWidth, y }, true);
+      }
+    } catch { }
+    return orig();
+  };
+}
+function afterFlip() {
+  if (!book) return;
+  curPage = book.getCurrentPageIndex();
+  const n = bookPages.length, portrait = book.getOrientation() === "portrait";
+  const shown = (portrait ? [curPage] : [curPage, curPage + 1]).map(i => bookPages[i]).filter(p => p?.kind === "page");
+  const total = bookPages.filter(p => p.kind === "page").length;
   let label;
-  if (pos === 0) label = "Couverture";
-  else if (!shown.length) label = total ? "Fin du classeur" : "Classeur vide";
-  else label = (wide && pos === 1 ? "Sommaire · " : "") + (shown.length > 1 ? `Pages ${shown[0]}–${shown[1]}` : `Page ${shown[0]}`) + ` / ${total}`;
+  if (curPage === 0) label = "Couverture";
+  else if (curPage >= n - 1) label = "Dos du classeur";
+  else if (!shown.length) label = bookPages[curPage]?.kind === "inner" ? "Sommaire" : total ? "Fin du classeur" : "Classeur vide";
+  else label = (!portrait && curPage === 1 ? "Sommaire · " : "") + (shown.length > 1 ? `Pages ${shown[0].num}–${shown[1].num}` : `Page ${shown[0].num}`) + ` / ${total}`;
   $("#pageNum").textContent = label;
-  const cur = currentGroupIndex();
-  $$(".dv").forEach(d => d.setAttribute("aria-current", +d.dataset.gi === cur));
+  $("#prev").disabled = curPage <= 0; $("#next").disabled = curPage >= n - 1;
+  const gi = shown[shown.length - 1]?.gi ?? -1;
+  $$(".dv").forEach(d => d.setAttribute("aria-current", +d.dataset.gi === gi));
+  placeRings(portrait, n);
 }
-function currentGroupIndex() {
-  const wide = wideMQ.matches;
-  const p = wide ? (seq[2 * pos + 1]?.kind === "page" ? seq[2 * pos + 1] : seq[2 * pos]) : seq[pos];
-  return p?.kind === "page" ? p.gi : -1;
+function placeRings(portrait, n) {
+  const rings = $("#rings"), block = $("#binder .stf__block"); if (!rings || !block) return;
+  const open = curPage > 0 && curPage < n - 1;
+  rings.hidden = !open; if (!open) return;
+  const host = $("#binder").getBoundingClientRect(), r = book.getBoundsRect(), b = block.getBoundingClientRect();
+  const x = b.left - host.left + r.left + r.pageWidth; // en portrait, la page de gauche est virtuelle (hors écran)
+  rings.style.left = x + "px"; rings.style.top = (b.top - host.top + r.top) + "px"; rings.style.height = r.height + "px";
 }
 function renderDividers() {
   const nav = $("#dividers");
   nav.innerHTML = groups.map((g, gi) => `<button class="dv" type="button" data-gi="${gi}" style="--c:${g.color}">${esc(g.label)} <span>${g.count}</span></button>`).join("");
   nav.hidden = !groups.length;
-  $$(".dv", nav).forEach(b => b.onclick = () => jumpTo(contentOffset + groups[+b.dataset.gi].firstPage));
-  updatePager();
+  $$(".dv", nav).forEach(b => b.onclick = () => { if (book) book.flip(2 + groups[+b.dataset.gi].firstPage); });
 }
-function jumpTo(seqIndex) {
-  if (flipping) return;
-  pos = posForSeq(seqIndex); renderSpread();
-  const sp = $("#spread"); sp.classList.add("jump"); setTimeout(() => sp.classList.remove("jump"), 300);
-  $(".dv[aria-current=true]")?.scrollIntoView({ inline: "nearest", block: "nearest" });
-}
-function rectOf(el) { return { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight }; }
-function makeLeaf(r, front, back, origin) {
-  const layer = document.createElement("div"); layer.className = "flip-layer";
-  const leaf = document.createElement("div"); leaf.className = "leaf";
-  leaf.style.cssText = `left:${r.left}px;top:${r.top + 90}px;width:${r.width}px;height:${r.height}px;transform-origin:${origin}`;
-  leaf.innerHTML = `<div class="face front">${front}<i class="shade"></i></div><div class="face back">${back}<i class="shade"></i></div>`;
-  layer.append(leaf); $("#spread").append(layer);
-  return { layer, leaf };
-}
-async function turn(leaf, from, to) {
-  const o = { duration: 720, easing: "cubic-bezier(.45,.05,.3,1)", fill: "forwards" };
-  const mid = (from + to) / 2;
-  const a = leaf.animate([{ transform: `rotateY(${from}deg)` }, { transform: `rotateY(${mid}deg) translateZ(18px)` }, { transform: `rotateY(${to}deg)` }], o);
-  const opening = Math.abs(to) < Math.abs(from);
-  leaf.querySelector(".front .shade").animate([{ opacity: opening ? .5 : 0 }, { opacity: opening ? 0 : .5 }], o);
-  leaf.querySelector(".back .shade").animate([{ opacity: opening ? 0 : .5 }, { opacity: opening ? .5 : 0 }], o);
-  await a.finished;
-}
-async function flip(dir) {
-  if (flipping) return;
-  const target = pos + dir;
-  if (target < 0 || target > maxPos()) return;
-  if (reduceMotion.matches) { pos = target; renderSpread(); return; }
-  flipping = true; updatePager();
-  const sp = $("#spread");
-  try {
-    if (wideMQ.matches) {
-      const L = $(".slot.left", sp), R = $(".slot.right", sp);
-      if (dir > 0) {
-        const { layer, leaf } = makeLeaf(rectOf(R), pageHTML(seq[2 * pos + 1], "right"), pageHTML(seq[2 * pos + 2], "left"), "left center");
-        R.innerHTML = pageHTML(seq[2 * pos + 3], "right");
-        if (pos === 0) sp.classList.remove("closed");
-        await turn(leaf, 0, -180); layer.remove();
-      } else {
-        const { layer, leaf } = makeLeaf(rectOf(L), pageHTML(seq[2 * pos], "left"), pageHTML(seq[2 * pos - 1], "right"), "right center");
-        L.innerHTML = pageHTML(seq[2 * pos - 2], "left");
-        if (pos === 1) sp.classList.add("closed");
-        await turn(leaf, 0, 180); layer.remove();
-      }
-    } else {
-      const S = $(".slot.right", sp);
-      if (dir > 0) {
-        const { layer, leaf } = makeLeaf(rectOf(S), pageHTML(seq[pos], "right"), backHTML(seq[pos]), "left center");
-        S.innerHTML = pageHTML(seq[pos + 1], "right");
-        await turn(leaf, 0, -180); layer.remove();
-      } else {
-        const { layer, leaf } = makeLeaf(rectOf(S), pageHTML(seq[pos - 1], "right"), backHTML(seq[pos - 1]), "left center");
-        await turn(leaf, -180, 0); layer.remove();
-      }
-    }
-    pos = target;
-  } finally { flipping = false; renderSpread(); }
-}
-$("#prev").onclick = () => flip(-1);
-$("#next").onclick = () => flip(1);
+$("#prev").onclick = () => book?.flipPrev("bottom");
+$("#next").onclick = () => book?.flipNext("bottom");
 document.addEventListener("keydown", e => {
   if ($("#v-classeur").hidden || $("#sheet").open || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) return;
-  if (e.key === "ArrowRight") flip(1); else if (e.key === "ArrowLeft") flip(-1);
+  if (e.key === "ArrowRight") book?.flipNext(); else if (e.key === "ArrowLeft") book?.flipPrev();
 });
-/* Glisser pour tourner les pages */
-const binderEl = $("#binder");
-let sx = null, sy = null, dragged = false;
-binderEl.addEventListener("pointerdown", e => { sx = e.clientX; sy = e.clientY; dragged = false; });
-binderEl.addEventListener("pointermove", e => { if (sx != null && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) dragged = true; });
-binderEl.addEventListener("pointercancel", () => { sx = null; });
-binderEl.addEventListener("pointerup", e => {
-  if (sx == null) return;
-  const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
-  if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2) flip(dx < 0 ? 1 : -1);
-});
-binderEl.addEventListener("click", e => {
-  if (dragged) { dragged = false; return; }
+/* Les pochettes ne sont pas des <button> : la bibliothèque ignore les gestes qui démarrent sur un bouton, on ne pourrait plus tourner les pages. */
+function binderActivate(e) {
+  if (Date.now() - lastTurnAt < 400) return; // un glisser vient de tourner la page : pas un appui
   const pk = e.target.closest(".pocket[data-id]");
   if (pk) return openSheet(pk.dataset.id);
-  if (e.target.closest(".cover")) flip(1);
-});
-binderEl.addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.closest(".cover")) { e.preventDefault(); flip(1); } });
+  if (e.target.closest("[data-open]") && curPage === 0) book?.flipNext("bottom");
+}
+$("#binder").addEventListener("click", binderActivate);
+$("#binder").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.closest("[role=button]")) { e.preventDefault(); binderActivate(e); } });
+window.addEventListener("resize", () => { if (book) setTimeout(afterFlip, 60); });
 
 $$(".binder-head .chip").forEach(b => b.onclick = () => {
   bState.game = b.dataset.game; saveBState();
   $$(".binder-head .chip").forEach(x => x.setAttribute("aria-pressed", x === b));
   $("#groupBy").querySelector('[value="jeu"]').hidden = bState.game !== "all";
   if (bState.game !== "all" && bState.groupBy === "jeu") { bState.groupBy = "serie"; $("#groupBy").value = "serie"; }
-  pos = 0; buildBinder();
+  buildBinder();
 });
-$("#groupBy").onchange = e => { bState.groupBy = e.target.value; saveBState(); buildBinder(); pos = Math.min(posForSeq(contentOffset), maxPos()); renderSpread(); };
-$("#showPrices").onchange = e => { bState.showPrices = e.target.checked; saveBState(); renderSpread(); };
-wideMQ.addEventListener("change", () => { if (!$("#v-classeur").hidden) buildBinder(true); });
+$("#groupBy").onchange = e => { bState.groupBy = e.target.value; saveBState(); buildBinder(); book?.turnToPage(1); setTimeout(afterFlip, 60); };
+$("#showPrices").onchange = e => { bState.showPrices = e.target.checked; saveBState(); buildBinder(true); };
+
+/* ============ Personnaliser le classeur ============ */
+const SWATCHES = ["#1E2433", "#0D0F14", "#1F3A7A", "#0F5A6B", "#1F5A3D", "#6E1C2B", "#4B2A7B", "#8A5A12", "#E9E4D8", "#F2F4F8"];
+const TEXTURES = { cuir: "Cuir", lisse: "Lisse", carbone: "Carbone", holo: "Holographique" };
+const EDGES = { ambiance: "Ambiance de la section", classique: "Classique", or: "Or", argent: "Argent", holo: "Holographique", perso: "Couleur au choix" };
+function setStyle(patch, rebuild) {
+  styles[bState.game] = { ...curStyle(), ...patch }; store.set("cotecarte.styles", styles);
+  if (rebuild) buildBinder(true); else applyStyleVars();
+}
+function openStyle() {
+  const d = $("#sheet"), st = curStyle();
+  const chips = (obj, cur, attr) => Object.entries(obj).map(([k, v]) => `<button type="button" class="chip" data-${attr}="${k}" aria-pressed="${k === cur}">${v}</button>`).join("");
+  d.innerHTML = `<form method="dialog" class="style-in">
+    <button class="x" value="close" aria-label="Fermer">×</button>
+    <h2>Personnaliser le classeur ${esc(bState.game === "all" ? "" : GAME[bState.game].label)}</h2>
+    <div class="cfg-row"><label class="cfg-label" for="stTitle">Nom sur la couverture</label><input type="text" id="stTitle" maxlength="28" value="${esc(st.title)}" placeholder="${esc(GAME[bState.game].title)}"></div>
+    <div class="cfg-row"><span class="cfg-label">Couleur de la couverture</span><div class="swatches" id="stCover">${SWATCHES.map(c => `<button type="button" class="sw" data-c="${c}" style="--c:${c}" aria-label="Couleur ${c}" aria-pressed="${c.toLowerCase() === st.cover.toLowerCase()}"></button>`).join("")}<input type="color" id="stCoverPick" value="${st.cover}" aria-label="Autre couleur"></div></div>
+    <div class="cfg-row"><span class="cfg-label">Matière</span><div class="chips" id="stTex">${chips(TEXTURES, st.texture, "tex")}</div></div>
+    <div class="cfg-row"><span class="cfg-label">Pages</span><div class="chips" id="stPages">${chips({ sombre: "Sombres", clair: "Claires" }, st.pages, "pages")}</div></div>
+    <div class="cfg-row"><span class="cfg-label">Contour des pochettes</span><div class="chips" id="stEdge">${chips(EDGES, st.edge, "edge")}</div>
+      <div class="row" id="stEdgeColorRow" ${st.edge === "perso" ? "" : "hidden"}><input type="color" id="stEdgeColor" value="${st.edgeColor}" aria-label="Couleur du contour"></div>
+      <p class="note">« Ambiance de la section » reprend la couleur de chaque intercalaire : rouge pour Feu, bleu pour Eau…</p></div>
+    <div class="row"><button type="button" class="btn" id="stReset">Revenir au style d'origine</button><button class="btn primary" value="close">Terminé</button></div>
+  </form>`;
+  const press = (sel, el) => $$(sel, d).forEach(x => x.setAttribute("aria-pressed", x === el));
+  let tTimer;
+  $("#stTitle", d).oninput = e => { clearTimeout(tTimer); tTimer = setTimeout(() => setStyle({ title: e.target.value.trim() }, true), 350); };
+  $$("#stCover .sw", d).forEach(b => b.onclick = () => { press("#stCover .sw", b); $("#stCoverPick", d).value = b.dataset.c; setStyle({ cover: b.dataset.c }); });
+  $("#stCoverPick", d).oninput = e => { press("#stCover .sw", null); setStyle({ cover: e.target.value }); };
+  $$("#stTex .chip", d).forEach(b => b.onclick = () => { press("#stTex .chip", b); setStyle({ texture: b.dataset.tex }, true); });
+  $$("#stPages .chip", d).forEach(b => b.onclick = () => { press("#stPages .chip", b); setStyle({ pages: b.dataset.pages }); });
+  $$("#stEdge .chip", d).forEach(b => b.onclick = () => { press("#stEdge .chip", b); $("#stEdgeColorRow", d).hidden = b.dataset.edge !== "perso"; setStyle({ edge: b.dataset.edge }); });
+  $("#stEdgeColor", d).oninput = e => setStyle({ edgeColor: e.target.value });
+  $("#stReset", d).onclick = () => { delete styles[bState.game]; store.set("cotecarte.styles", styles); buildBinder(true); d.close(); };
+  d.showModal();
+}
+$("#styleBtn").onclick = openStyle;
 
 /* ============ Fiche d'une carte ============ */
 function openSheet(id) {
@@ -725,7 +741,7 @@ async function autoEnrich() {
     await sleep(500);
   }
   save(); enriching = false;
-  if (!$("#v-classeur").hidden && !flipping) buildBinder(true);
+  if (!$("#v-classeur").hidden) buildBinder(true);
 }
 $("#export").onclick = () => {
   const blob = new Blob([JSON.stringify(coll, null, 2)], { type: "application/json" });
@@ -763,9 +779,135 @@ function renderRel() {
     const when = days > 1 ? `dans ${days} jours` : days === 1 ? "demain" : days === 0 ? "aujourd'hui" : "en cours";
     return `<article class="rel"><div class="date"><b>${d.getDate()}</b><span>${d.toLocaleDateString("fr-FR", { month: "short" }).replace(".", "")}</span></div>
       <div class="info"><div class="tags"><span class="tag ${g.cls}">${g.label}</span><span class="state ${r.s}">${r.s === "ok" ? "Confirmé" : "Annoncé"}</span></div>
-      <h3>${esc(r.t)}</h3><p>${esc(r.n)}</p><span class="when">${when}</span></div></article>`;
+      <h3>${esc(r.t)}</h3><p>${esc(r.n)}</p><div class="row"><span class="when">${when}</span><a class="buy" href="#magasins">Où l'acheter près de moi →</a></div></div></article>`;
   }).join("");
 }
+
+/* ============ Magasins autour de moi (OpenStreetMap) ============ */
+const STORE_CATS = {
+  spec: { label: "Boutiques spécialisées", color: "#3CCBDD" },
+  jv: { label: "Jeux vidéo", color: "#8B7CF6" },
+  culture: { label: "Culture", color: "#E0AE14" },
+  jouets: { label: "Jouets", color: "#4CC38A" },
+  gms: { label: "Grandes surfaces", color: "#F0506A" }
+};
+const catOn = Object.assign({ spec: true, jv: true, culture: true, jouets: true, gms: false }, store.get("cotecarte.storeCats", {}));
+let here = store.get("cotecarte.here", null), shops = [], lmap = null, markers = null, markerById = new Map();
+function haversine(a, b, c, d) {
+  const R = 6371, t = x => x * Math.PI / 180, dl = t(c - a), dn = t(d - b);
+  return 2 * R * Math.asin(Math.sqrt(Math.sin(dl / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(dn / 2) ** 2));
+}
+function catOf(t) {
+  const n = `${t.name || ""} ${t.brand || ""}`;
+  if (/micromania|game ?cash/i.test(n) || t.shop === "video_games") return "jv";
+  if (/fnac|cultura|espace culturel/i.test(n)) return "culture";
+  if (/king jouet|jou[ée] ?club|grande r[ée]cr[ée]|toys/i.test(n) || t.shop === "toys") return "jouets";
+  if (/^(games|hobby|anime|comic|collector)$/.test(t.shop || "")) return "spec";
+  if (/leclerc|carrefour|auchan|intermarch|hyper u|super u/i.test(n)) return /city|express|proxi|contact|drive|station|location|bio|montagne/i.test(n) ? null : "gms";
+  return null;
+}
+async function fetchShops(lat, lon, km) {
+  const key = `cotecarte.shops.${lat.toFixed(3)},${lon.toFixed(3)},${km}`;
+  try { const c = JSON.parse(sessionStorage.getItem(key) || "null"); if (c) return c; } catch { }
+  const r = km * 1000;
+  const q = `[out:json][timeout:25];(nwr["shop"~"^(games|hobby|anime|comic|collector|video_games|toys)$"](around:${r},${lat},${lon});nwr["shop"]["name"~"Micromania|Cultura|Fnac|King Jouet|Jou[ée] ?Club|Grande R[ée]cr[ée]|Leclerc|Carrefour|Auchan|Intermarch|Hyper U|Super U|Espace Culturel",i](around:${r},${lat},${lon}););out center tags 400;`;
+  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
+  if (!res.ok) throw new Error("overpass " + res.status);
+  const j = await res.json(), out = [], seen = new Set();
+  for (const el of j.elements || []) {
+    const t = el.tags || {}, cat = catOf(t); if (!cat || !t.name) continue;
+    const la = el.lat ?? el.center?.lat, lo = el.lon ?? el.center?.lon; if (la == null) continue;
+    const k = t.name.toLowerCase() + la.toFixed(3) + lo.toFixed(3); if (seen.has(k)) continue; seen.add(k);
+    out.push({ id: el.type + el.id, name: t.name, cat, lat: la, lon: lo, dist: haversine(lat, lon, la, lo),
+      addr: [[t["addr:housenumber"], t["addr:street"]].filter(Boolean).join(" "), t["addr:city"]].filter(Boolean).join(", "),
+      hours: t.opening_hours || "", web: t.website || t["contact:website"] || "", phone: t.phone || t["contact:phone"] || "" });
+  }
+  out.sort((a, b) => a.dist - b.dist);
+  try { sessionStorage.setItem(key, JSON.stringify(out)); } catch { }
+  return out;
+}
+function storeStatus(msg, err) { const s = $("#storeStatus"); s.textContent = msg; s.classList.toggle("err", !!err); }
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  return new Promise((ok, ko) => {
+    const css = document.createElement("link"); css.rel = "stylesheet"; css.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"; document.head.append(css);
+    const js = document.createElement("script"); js.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"; js.onload = ok; js.onerror = ko; document.head.append(js);
+  });
+}
+async function searchAround(lat, lon, label) {
+  here = { lat: +lat.toFixed(3), lon: +lon.toFixed(3), label }; store.set("cotecarte.here", here);
+  const km = +$("#radius").value;
+  storeStatus(`Recherche des magasins dans un rayon de ${km} km${label ? " autour de " + label : ""}…`);
+  try {
+    shops = await fetchShops(here.lat, here.lon, km);
+  } catch { storeStatus("Le service de cartes OpenStreetMap ne répond pas. Réessayez dans une minute.", true); return; }
+  storeStatus(shops.length ? `${shops.length} magasin${shops.length > 1 ? "s" : ""} trouvé${shops.length > 1 ? "s" : ""} dans un rayon de ${km} km.` : `Aucun magasin trouvé dans un rayon de ${km} km. Élargissez le rayon.`, !shops.length);
+  try { await loadLeaflet(); drawMap(); } catch { $("#map").hidden = true; }
+  renderShops();
+}
+function drawMap() {
+  const el = $("#map"); el.hidden = false;
+  if (!lmap) {
+    lmap = L.map(el, { scrollWheelZoom: false });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(lmap);
+  }
+  markers?.remove(); markers = L.layerGroup().addTo(lmap); markerById.clear();
+  L.circleMarker([here.lat, here.lon], { radius: 9, color: "#fff", weight: 3, fillColor: "#121726", fillOpacity: 1 }).bindPopup("Vous êtes ici").addTo(markers);
+  const pts = [[here.lat, here.lon]];
+  for (const s of shops) {
+    if (!catOn[s.cat]) continue;
+    const m = L.circleMarker([s.lat, s.lon], { radius: 8, color: "#fff", weight: 2, fillColor: STORE_CATS[s.cat].color, fillOpacity: 1 })
+      .bindPopup(`<b>${esc(s.name)}</b><br>${esc(STORE_CATS[s.cat].label)} · ${s.dist.toFixed(1).replace(".", ",")} km${s.addr ? "<br>" + esc(s.addr) : ""}`).addTo(markers);
+    markerById.set(s.id, m); pts.push([s.lat, s.lon]);
+  }
+  lmap.invalidateSize();
+  if (pts.length > 1) lmap.fitBounds(pts, { padding: [24, 24], maxZoom: 15 }); else lmap.setView(pts[0], 13);
+}
+function renderCats() {
+  $("#storeCats").innerHTML = Object.entries(STORE_CATS).map(([k, c]) => {
+    const n = shops.filter(s => s.cat === k).length;
+    return `<button type="button" class="chip" data-cat="${k}" aria-pressed="${!!catOn[k]}" style="--c:${c.color}"><span class="dot"></span>${c.label}${shops.length ? ` (${n})` : ""}</button>`;
+  }).join("");
+  $$("#storeCats .chip").forEach(b => b.onclick = () => {
+    catOn[b.dataset.cat] = !catOn[b.dataset.cat]; store.set("cotecarte.storeCats", catOn);
+    if (lmap && here) drawMap(); renderShops();
+  });
+}
+function renderShops() {
+  renderCats();
+  const list = shops.filter(s => catOn[s.cat]).slice(0, 60);
+  $("#shopList").innerHTML = list.map(s => `<article class="shop" style="--c:${STORE_CATS[s.cat].color}">
+    <h3>${esc(s.name)}</h3>
+    <div class="meta"><b>${s.dist.toFixed(1).replace(".", ",")} km</b><span>${STORE_CATS[s.cat].label}</span></div>
+    ${s.addr ? `<p>${esc(s.addr)}</p>` : ""}${s.hours ? `<p>Horaires : ${esc(s.hours)}</p>` : ""}${s.phone ? `<p>Tél. ${esc(s.phone)}</p>` : ""}
+    <div class="acts"><button type="button" data-show="${s.id}">Voir sur la carte</button>
+      <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}" target="_blank" rel="noopener">Itinéraire</a>
+      ${/^https?:\/\//.test(s.web) ? `<a href="${esc(s.web)}" target="_blank" rel="noopener">Site</a>` : ""}</div></article>`).join("");
+  $$("#shopList [data-show]").forEach(b => b.onclick = () => {
+    const m = markerById.get(b.dataset.show); if (!m || !lmap) return;
+    $("#map").scrollIntoView({ block: "center", behavior: reduceMotion.matches ? "auto" : "smooth" });
+    lmap.setView(m.getLatLng(), 16); m.openPopup();
+  });
+}
+$("#locBtn").onclick = () => {
+  if (!navigator.geolocation) return storeStatus("La localisation n'est pas disponible : tapez votre ville.", true);
+  storeStatus("Localisation en cours…");
+  navigator.geolocation.getCurrentPosition(
+    p => searchAround(p.coords.latitude, p.coords.longitude, ""),
+    e => storeStatus(e.code === 1 ? "Localisation refusée. Autorisez-la dans les réglages du navigateur, ou tapez votre ville." : "Position introuvable. Tapez votre ville.", true),
+    { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+};
+$("#cityForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("#city").value.trim(); if (!q) return;
+  storeStatus(`Recherche de « ${q} »…`);
+  try {
+    const r = await getJSON(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=fr&accept-language=fr&q=${encodeURIComponent(q)}`);
+    if (!r.length) return storeStatus(`« ${q} » introuvable. Essayez un code postal.`, true);
+    searchAround(+r[0].lat, +r[0].lon, r[0].display_name.split(",")[0]);
+  } catch { storeStatus("Recherche de ville indisponible pour le moment.", true); }
+});
+$("#radius").onchange = () => { if (here) searchAround(here.lat, here.lon, here.label); };
 
 /* ============ Démarrage ============ */
 $$(".binder-head .chip").forEach(x => x.setAttribute("aria-pressed", x.dataset.game === bState.game));
