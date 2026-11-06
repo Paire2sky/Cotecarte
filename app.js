@@ -475,7 +475,11 @@ async function recognizeAndShow(rgba, w, h, hint) {
   const lists = await Promise.all(tops.map(c => versionsFromRow(D.meta[c.row]).then(vs => vs.map(v => ({ ...v, match: 1 - c.s })))));
   versions = lists.flat(); borderFilter = "";
   chosen = confident ? versions[0] : null;
-  status(confident ? `Reconnue : ${versions[0].name}. Vérifiez puis ajoutez.` : `${tops.length} cartes ressemblantes : choisissez la vôtre.`);
+  // Numéro lu différent de la carte trouvée : la version exacte (réimpression récente) n'est peut-être pas encore dans la base.
+  const mismatch = hit && !hit.fromName && !sameNumber(D.meta[top.row], hit);
+  if (mismatch) chosen = null;
+  status(mismatch ? `Illustration reconnue, mais le numéro lu (${hit.code}) ne correspond pas : votre version n'est peut-être pas encore dans la base. Vérifiez avant d'ajouter.`
+    : confident ? `Reconnue : ${versions[0].name}. Vérifiez puis ajoutez.` : `${tops.length} cartes ressemblantes : choisissez la vôtre.`, !!mismatch);
   renderVersions();
   $("#results").scrollIntoView({ block: "start", behavior: reduceMotion.matches ? "auto" : "smooth" });
   return true;
