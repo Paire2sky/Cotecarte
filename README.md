@@ -4,7 +4,7 @@ Site de scan et de cote des cartes Pokémon et One Piece.
 
 ## Ce que fait la version 1
 
-- **Scanner automatique** : caméra allumée, le site repère la carte dans le cadre, attend qu'elle soit immobile et nette, la photographie (pleine résolution quand le navigateur le permet) puis l'analyse : numéro, code d'extension et langue, et le nom en secours. Les versions possibles sont classées en comparant l'illustration (empreinte visuelle) et la couleur de la bordure (jaune, dorée, argentée, noire, blanche), ce qui distingue une réimpression à bordure dorée de l'originale. Après un ajout, le scan reprend pour la carte suivante. Bouton « Capturer » pour une photo manuelle, « Photo HD » via l'appareil photo natif.
+- **Scanner automatique par reconnaissance d'image** : caméra allumée, le site attend que la carte soit immobile et nette, la photographie, la repère dans l'image et la redresse (OpenCV.js), calcule son empreinte visuelle (couleurs normalisées, pHash, bordure et reflet métallique) puis cherche la plus proche parmi toutes les cartes de l'index. La lecture du numéro sert de confirmation. Tout se fait dans le navigateur, sans serveur ni service payant. Sans index, retour à la lecture du numéro.
 - **Choix de la version** : quand plusieurs cartes partagent un numéro (parallèle, reverse, autre extension), toutes s'affichent avec leur image et l'utilisateur choisit la sienne.
 - **Langue et prix** : l'utilisateur choisit la langue de sa carte (détectée d'office sur les Pokémon récents), puis ajuste le prix de son exemplaire, pré-rempli avec la cote.
 - **Cote** :
@@ -34,3 +34,12 @@ La caméra exige le **https**. Les trois hébergeurs ci-dessous le fournissent.
 - Liens d'affiliation Cardmarket pour la monétisation.
 - Prix One Piece en euros, si une source fiable se présente.
 - Pages SEO par carte pour attirer du trafic.
+
+## Index de reconnaissance
+
+- `vision/fp.js` : empreinte visuelle, code identique dans le navigateur et dans Node.
+- `vision/detect.js` : détection et redressement de la carte (OpenCV.js).
+- `build/build-index.mjs` : télécharge les images de toutes les cartes (TCGdex pour Pokémon, OPTCG API pour One Piece) et écrit `index/`.
+- `.github/workflows/index.yml` : reconstruit l'index chaque lundi, ou à la demande (onglet Actions, « Run workflow »).
+
+Banc d'essai sur photos simulées (3 000 cartes, dont 150 réimpressions à bordure dorée) : 97,5 % de bonnes reconnaissances en conditions normales, 90 % en conditions difficiles (reflets forts, flou, faible lumière, carte à l'envers). À confirmer sur de vraies photos.

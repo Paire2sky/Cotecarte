@@ -67,6 +67,7 @@ async function startCam() {
     }
     $("#flipCam").hidden = cams.length < 2;
     setupTools();
+    loadVision();
     getWorker().then(() => status(autoOn ? "Scan auto prêt : placez une carte dans le cadre." : "Prêt : touchez « Capturer »."), () => { });
     if (autoOn) startWatch();
   } catch (e) {
@@ -346,6 +347,144 @@ async function grabStill() {
   c.getContext("2d").drawImage(video, 0, 0);
   return { src: c, g };
 }
+/* ============ Reconnaissance par l'image : la photo est comparée à l'index de toutes les cartes ============ */
+const IDX = { state: "idle", p: null, data: null, cv: null };
+const OPENCV_URL = "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js";
+function loadScript(src) {
+  return new Promise((ok, ko) => { const s = document.createElement("script"); s.src = src; s.async = true; s.onload = ok; s.onerror = ko; document.head.append(s); });
+}
+async function getBin(url) { const r = await fetch(url); if (!r.ok) throw new Error("http " + r.status); return r.arrayBuffer(); }
+function waitCv() {
+  return new Promise((res, rej) => {
+    const t0 = Date.now();
+    (function poll() {
+      const c = window.cv;
+      // OpenCV.js expose un « then » maison : ni l'attendre ni l'appeler (la page peut planter). On attend simplement cv.Mat.
+      if (c && c.Mat && c.getPerspectiveTransform) return res({ cv: c });
+      if (Date.now() - t0 > 40000) return rej(new Error("opencv"));
+      setTimeout(poll, 150);
+    })();
+  });
+}
+/* Charge l'index (quelques Mo, mis en cache par le navigateur) et OpenCV. Retourne false si l'index n'existe pas encore. */
+function loadVision() {
+  if (IDX.p) return IDX.p;
+  IDX.state = "loading";
+  IDX.p = (async () => {
+    try {
+      const info = await getJSON("index/info.json");
+      const [vec, hash, bord, pcaB, meta, sets] = await Promise.all([getBin("index/vec.bin"), getBin("index/hash.bin"), getBin("index/border.bin"), getBin("index/pca.bin"), getJSON("index/meta.json"), getJSON("index/sets.json").catch(() => ({}))]);
+      const pf = new Float32Array(pcaB);
+      IDX.data = { info, vec: new Int8Array(vec), hash: new Uint8Array(hash), bord: new Uint8Array(bord), meta, sets, pca: { mean: pf.subarray(0, info.dim), comps: pf.subarray(info.dim), dim: info.dim, k: info.k } };
+      if (!window.cv) await loadScript(OPENCV_URL);
+      IDX.cv = (await waitCv()).cv; // enveloppé : renvoyer cv tel quel ferait boucler la promesse sur son « then »
+      IDX.state = "ready";
+      return true;
+    } catch (e) { IDX.state = "off"; return false; }
+  })();
+  return IDX.p;
+}
+const MATCH = { hamW: 0.006, bordW: 0.1, minScore: 0.38, sure: 0.45, gap: 0.05, numBoost: 0.08 }; // réglés sur le banc d'essai (photos simulées)
+function rectQuad(r) { return [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }]; }
+/* Trouve la carte dans l'image, la redresse et cherche les cartes les plus ressemblantes. */
+function recognizeFrame(rgba, w, h, hint) {
+  const { cv, data: D } = IDX;
+  let quad = CCDetect.findCard(cv, rgba, w, h, hint);
+  const detected = !!quad;
+  if (!quad) quad = rectQuad(hint);
+  const small = CCDetect.warp(cv, rgba, w, h, quad, 245, 342);
+  const res = [];
+  for (const flip of [false, true]) {
+    const img = flip ? CCFP.rotate180(small, 245, 342) : new Uint8ClampedArray(small);
+    const d = CCFP.describe(img, 245, 342), q = CCFP.project(d.desc, D.pca);
+    for (const c of CCFP.search(q, D.vec, D.info.k, D.info.n, 30)) {
+      const ham = CCFP.hamming(d.hash, 0, D.hash, c.row * 8), cos = c.score / D.info.scale;
+      const bd = CCFP.borderDist(d.border, CCFP.unpackBorder(D.bord, c.row * CCFP.BORDER_BYTES));
+      res.push({ row: c.row, cos, ham, bd, s: cos - ham * MATCH.hamW - bd * MATCH.bordW, flip });
+    }
+  }
+  res.sort((a, b) => b.s - a.s);
+  const seen = new Set(), cands = [];
+  for (const r of res) if (!seen.has(r.row)) { seen.add(r.row); cands.push(r); }
+  const flip = cands[0]?.flip || false;
+  let big = CCDetect.warp(cv, rgba, w, h, quad, 630, 880);
+  if (flip) big = CCFP.rotate180(big, 630, 880);
+  return { detected, cands: cands.slice(0, 12), big };
+}
+function rgbaToCanvas(rgba, w, h) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0); return c;
+}
+/* Lecture rapide du numéro pour confirmer (un passage par zone). */
+async function quickNumber(card) {
+  const w = await getWorker(), W = card.width, H = card.height;
+  for (const [sx, sy, sw, sh] of [[0, H * 0.86, W * 0.6, H * 0.14], [W * 0.4, H * 0.86, W * 0.6, H * 0.14]]) {
+    const { data } = await w.recognize(prep(card, sx, sy, sw, sh, 0, 1400));
+    showRaw(data.text);
+    const hit = parseCode(data.text || ""); if (hit) return hit;
+  }
+  return null;
+}
+const sameNumber = (m, hit) => {
+  if (!hit) return false;
+  if (hit.game === "onepiece") return m[0] === 1 && String(m[4]).toUpperCase() === hit.code;
+  return m[0] === 0 && String(+String(m[4]).replace(/\D/g, "") || m[4]) === String(+String(hit.number).replace(/\D/g, "") || hit.number);
+};
+/* Fiche complète (nom français, prix) d'un résultat de l'index. */
+async function versionsFromRow(m) {
+  const [g, id, name, setId, local, img, lang, bcls] = m;
+  const borderCls = CCFP.BORDER_NAMES[bcls] || "";
+  try {
+    if (g === 0) {
+      let d = null;
+      for (const l of [...new Set(["fr", lang])]) { d = await getJSON(`${TCGDEX}/${l}/cards/${encodeURIComponent(id)}`).catch(() => null); if (d?.id) break; }
+      if (d?.id) return fromTcgdex(d).map(v => ({ ...v, borderCls }));
+    } else {
+      const rows = await fetchOnePiece(local).catch(() => []);
+      const r = rows.find(v => v.vid === "op:" + id) || rows[0];
+      if (r) return [{ ...r, borderCls }];
+    }
+  } catch { }
+  const set = IDX.data.sets[setId] || {};
+  return [{ vid: (g === 0 ? "tx:" : "op:") + id, game: g === 0 ? "pokemon" : "onepiece", code: g === 0 ? `${local}/${set.o ?? "?"}` : local, number: String(local), total: set.o, name, set: set.n || setId, setCode: setId, setDate: "", setSymbol: "", rarity: "", variant: "", img: g === 0 ? img + "/low.webp" : img, imgLarge: g === 0 ? img + "/high.webp" : img, refPrice: null, refCurrency: g === 0 ? "EUR" : "USD", source: g === 0 ? "Cardmarket" : "TCGplayer", cmUrl: "", borderCls }];
+}
+/* Analyse une image complète (photo ou image vidéo). Retourne true si une carte a été proposée. */
+async function recognizeAndShow(rgba, w, h, hint) {
+  const r = recognizeFrame(rgba, w, h, hint);
+  const card = rgbaToCanvas(r.big, 630, 880);
+  lastFp = fingerprint(toCardCanvas(card, 0, 0, 630, 880));
+  lastShot = card.toDataURL("image/jpeg", 0.8);
+  const hit = await quickNumber(card).catch(() => null);
+  const D = IDX.data;
+  for (const c of r.cands) if (sameNumber(D.meta[c.row], hit)) c.s += MATCH.numBoost;
+  r.cands.sort((a, b) => b.s - a.s);
+  const top = r.cands[0];
+  if (!top || top.s < MATCH.minScore) {
+    if (hit) { found(hit); return true; } // carte absente de l'index (toute nouvelle) : recherche par numéro
+    return false;
+  }
+  const second = r.cands[1];
+  // Même illustration (réimpression, autre bordure) : c'est la bordure qui tranche.
+  const sameArt = second && Math.abs(top.cos - second.cos) < 0.03 && second.bd - top.bd > 0.12;
+  const confident = (top.s > MATCH.sure && (!second || top.s - second.s > MATCH.gap || sameArt)) || (hit && sameNumber(D.meta[top.row], hit) && !sameNumber(D.meta[r.cands[1].row], hit));
+  stopWatch(); showRaw("", true);
+  if (navigator.vibrate) navigator.vibrate(60);
+  status("Carte reconnue, chargement de la cote…");
+  pick = { lang: hit?.lang || "FR" };
+  const tops = r.cands.slice(0, confident ? 4 : 6);
+  const lists = await Promise.all(tops.map(c => versionsFromRow(D.meta[c.row]).then(vs => vs.map(v => ({ ...v, match: 1 - c.s })))));
+  versions = lists.flat(); borderFilter = "";
+  chosen = confident ? versions[0] : null;
+  status(confident ? `Reconnue : ${versions[0].name}. Vérifiez puis ajoutez.` : `${tops.length} cartes ressemblantes : choisissez la vôtre.`);
+  renderVersions();
+  $("#results").scrollIntoView({ block: "start", behavior: reduceMotion.matches ? "auto" : "smooth" });
+  return true;
+}
+async function frameRGBA(src, sw, sh) {
+  const c = document.createElement("canvas"); c.width = sw; c.height = sh;
+  const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(src, 0, 0, sw, sh);
+  return x.getImageData(0, 0, sw, sh).data;
+}
 async function capture() {
   if (busy) return; busy = true;
   $("#cam").classList.remove("locking"); $("#cam").classList.add("flash"); setTimeout(() => $("#cam").classList.remove("flash"), 260);
@@ -353,6 +492,11 @@ async function capture() {
     status("Photo prise, analyse…");
     const still = await grabStill(); if (!still) return;
     const { src, g } = still;
+    if (await loadVision()) {
+      const W = g.vw, H = g.vh, rgba = await frameRGBA(src, W, H);
+      const hint = { x: g.x, y: g.y, w: g.w, h: g.h };
+      if (await recognizeAndShow(rgba, W, H, hint)) return;
+    }
     const card = document.createElement("canvas"); card.width = Math.round(g.w); card.height = Math.round(g.h);
     card.getContext("2d").drawImage(src, g.x, g.y, g.w, g.h, 0, 0, card.width, card.height);
     const ok = await identify(card);
@@ -403,6 +547,11 @@ $("#photo").onchange = async e => {
     status("Analyse de la photo… (quelques secondes)");
     const bmp = await createImageBitmap(f), c = document.createElement("canvas");
     c.width = bmp.width; c.height = bmp.height; c.getContext("2d").drawImage(bmp, 0, 0);
+    if (await loadVision()) {
+      const k = Math.min(1, 2200 / Math.max(bmp.width, bmp.height)), W = Math.round(bmp.width * k), H = Math.round(bmp.height * k);
+      const hw = Math.min(W * 0.8, H * 0.8 * 63 / 88), hh = hw * 88 / 63;
+      if (await recognizeAndShow(await frameRGBA(bmp, W, H), W, H, { x: (W - hw) / 2, y: (H - hh) / 2, w: hw, h: hh })) return;
+    }
     if (!(await identify(c, { photo: true }))) status("Numéro introuvable sur la photo. Reprenez la carte de plus près, bien à plat, ou tapez le numéro.", true);
   } catch { status("Impossible de lire cette photo. Tapez le numéro.", true); }
 };
