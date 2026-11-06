@@ -279,3 +279,18 @@ dialog.cardsheet::backdrop{background:rgba(5,8,15,.6);backdrop-filter:blur(3px)}
 .foot p{margin:0 0 6px;max-width:75ch}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* Scan automatique */
+.lock{position:absolute;inset:-6px;border-radius:18px;pointer-events:none;opacity:0;transition:opacity .15s;
+  background:conic-gradient(#3CCBDD calc(var(--lock,0)*360deg),transparent 0) border-box;
+  -webkit-mask:linear-gradient(#000 0 0) padding-box exclude,linear-gradient(#000 0 0);mask:linear-gradient(#000 0 0) padding-box exclude,linear-gradient(#000 0 0);border:4px solid transparent}
+.cam.locking .lock{opacity:1}
+.flashfx{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+.cam.flash .flashfx{animation:flash .26s ease-out}
+@keyframes flash{from{opacity:.85}to{opacity:0}}
+#autoBtn[aria-pressed="false"]{background:var(--surface);color:var(--fg);border-color:var(--line)}
+.shot-row{display:flex;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:10px}
+.shot-row .shot{width:74px;aspect-ratio:63/88;object-fit:cover;border-radius:6px;flex:none;background:var(--sunk)}
+.shot-info{display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:0}
+.version{position:relative}
+.best{position:absolute;z-index:1;top:12px;left:12px;font:700 10.5px var(--body);letter-spacing:.05em;text-transform:uppercase;background:var(--accent);color:var(--accent-fg);border-radius:999px;padding:3px 8px}

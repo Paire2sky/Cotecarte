@@ -27,14 +27,14 @@
   <!-- SCANNER -->
   <section id="v-scan" class="view">
     <div class="intro">
-      <h1>Visez la carte, on trouve sa cote.</h1>
-      <p>Pokémon et One Piece. Le numéro imprimé en bas de la carte est lu dans votre navigateur, sans envoi de photo.</p>
+      <h1>Posez la carte, on trouve sa cote.</h1>
+      <p>Pokémon et One Piece. Numéro, code d'extension, nom, illustration et bordure sont analysés dans votre navigateur, sans envoi de photo.</p>
     </div>
 
     <div class="scanner">
       <div class="cam" id="cam">
         <video id="video" playsinline muted></video>
-        <div class="guide" id="guide" aria-hidden="true"><div class="zone"></div></div>
+        <div class="guide" id="guide" aria-hidden="true"><div class="zone"></div><div class="lock"></div></div><div class="flashfx" aria-hidden="true"></div>
         <div class="cam-tools" id="camTools" hidden>
           <button class="tool" id="torch" type="button" hidden aria-pressed="false">Lampe</button>
           <label class="zoom" id="zoomWrap" hidden><span>Zoom</span><input type="range" id="zoom" min="1" max="2" step="0.1" value="1"></label>
@@ -46,11 +46,12 @@
         </div>
       </div>
       <div class="cam-bar">
-        <p class="hint">Placez la carte dans le contour, à plat, sans reflet et bien nette (15 à 20 cm). La bande du bas doit couvrir le numéro.</p>
+        <p class="hint">Allumez la caméra et posez la carte dans le contour, à plat, sans reflet (15 à 20 cm). Dès qu'elle est stable et nette, la photo part toute seule.</p>
         <p class="ocr-raw" id="ocrRaw" aria-live="off"></p>
         <p class="fine" id="camInfo"></p>
         <div class="row">
-          <button class="btn primary" id="scanBtn" type="button" disabled>Lire le numéro</button>
+          <button class="btn primary" id="autoBtn" type="button" aria-pressed="true" disabled>Scan auto : activé</button>
+          <button class="btn" id="scanBtn" type="button" disabled>Capturer</button>
           <label class="btn" for="photo">Photo HD</label>
           <button class="btn small" id="flipCam" type="button" hidden>Changer de caméra</button>
         </div>

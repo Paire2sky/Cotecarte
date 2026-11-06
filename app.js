@@ -59,7 +59,7 @@ async function startCam() {
     track = stream.getVideoTracks()[0];
     // Pas d'applyConstraints ici : sur iPhone, Safari repasse alors la caméra en 640×480 et le numéro devient illisible.
     showCamInfo();
-    $("#camOff").hidden = true; $("#scanBtn").disabled = false;
+    $("#camOff").hidden = true; $("#scanBtn").disabled = false; $("#autoBtn").disabled = false;
     if (!cams.length) {
       cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
       const cur = track.getSettings().deviceId;
@@ -67,6 +67,8 @@ async function startCam() {
     }
     $("#flipCam").hidden = cams.length < 2;
     setupTools();
+    getWorker().then(() => status(autoOn ? "Scan auto prêt : placez une carte dans le cadre." : "Prêt : touchez « Capturer »."), () => { });
+    if (autoOn) startWatch();
   } catch (e) {
     status(e?.name === "NotAllowedError" ? "Accès à la caméra refusé. Autorisez-la dans les réglages du navigateur, ou utilisez « Photo HD »."
       : !window.isSecureContext ? "La caméra exige une adresse en https."
@@ -186,71 +188,232 @@ function guideInVideo() {
   const offX = (vb.width - vw * scale) / 2, offY = (vb.height - vh * scale) / 2;
   return { x: (gb.left - vb.left - offX) / scale, y: (gb.top - vb.top - offY) / scale, w: gb.width / scale, h: gb.height / scale, vw, vh };
 }
-async function readLoop() {
-  let tries = 0, mode = 0; reads = [];
-  try {
-    const w = await getWorker();
-    $("#cam").classList.add("reading");
-    while (reading) {
-      tries++;
-      const g = guideInVideo();
-      if (g) {
-        // 4 passages sur 5 : bande du bas du cadre. 1 sur 5 : toute la moitié basse de l'image, si la carte n'est pas bien placée.
-        const wideZone = tries % 5 === 0;
-        const sx = wideZone ? 0 : Math.max(0, g.x - g.w * 0.05), sw = wideZone ? g.vw : Math.min(g.vw - sx, g.w * 1.1);
-        const sy = wideZone ? Math.max(0, g.y + g.h * 0.35) : Math.max(0, g.y + g.h * 0.72), sh = Math.min(g.vh - sy, wideZone ? g.h * 0.8 : g.h * 0.34);
-        if (sw > 10 && sh > 10) {
-          const { data } = await w.recognize(prep(video, sx, sy, sw, sh, wideZone ? 0 : mode, wideZone ? 1600 : 1800));
-          if (!wideZone) mode = (mode + 1) % 3;
-          if (!reading) return;
-          showRaw(data.text);
-          const hit = parseCode(data.text || "");
-          if (hit && confirmRead(hit)) return found(hit);
-        }
+/* ============ Empreinte visuelle (bordure + illustration) ============ */
+const FW = 126, FH = 176; // carte normalisée, proportions 63×88
+function toCardCanvas(src, sx, sy, sw, sh) {
+  const c = document.createElement("canvas"); c.width = FW; c.height = FH;
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.imageSmoothingQuality = "high"; x.drawImage(src, sx, sy, sw, sh, 0, 0, FW, FH);
+  return c;
+}
+function rgb2hsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: (h * 60 + 360) % 360, s: mx ? d / mx : 0, v: mx };
+}
+const BORDERS = { jaune: "Jaune", or: "Dorée", argent: "Argentée", blanc: "Blanche", noir: "Noire", autre: "Autre" };
+function borderClass(hsv) {
+  if (hsv.v < 0.28) return "noir";
+  if (hsv.s < 0.16) return hsv.v > 0.82 ? "blanc" : "argent";
+  if (hsv.h >= 28 && hsv.h <= 66) return hsv.s > 0.62 && hsv.h > 42 && hsv.v > 0.5 ? "jaune" : "or"; // le doré est moins saturé et plus orangé que le jaune
+  return "autre";
+}
+/* Empreinte d'une carte déjà recadrée : couleur de bordure, grille de couleurs et dHash de l'illustration. */
+function fingerprint(cv) {
+  const d = cv.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, FW, FH).data;
+  const px = (x, y) => { const i = (y * FW + x) * 4; return [d[i], d[i + 1], d[i + 2]]; };
+  // Bordure : anneau entre 1,5 % et 4,5 % de la largeur, coins arrondis exclus
+  const a = Math.round(FW * 0.015), bnd = Math.round(FW * 0.045), acc = [0, 0, 0]; let n = 0;
+  for (let y = 12; y < FH - 12; y++) for (const x of [...Array(bnd - a).keys()].flatMap(k => [a + k, FW - 1 - a - k])) { const p = px(x, y); acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; n++; }
+  for (let x = 12; x < FW - 12; x++) for (const y of [...Array(bnd - a).keys()].flatMap(k => [a + k, FH - 1 - a - k])) { const p = px(x, y); acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; n++; }
+  const brgb = acc.map(v => v / n), bh = rgb2hsv(...brgb);
+  // Illustration : zone 9–91 % en largeur, 11–52 % en hauteur
+  const ax = Math.round(FW * 0.09), aw = Math.round(FW * 0.82), ay = Math.round(FH * 0.11), ah = Math.round(FH * 0.41);
+  const GX = 6, GY = 5, grid = [];
+  for (let gy = 0; gy < GY; gy++) for (let gx = 0; gx < GX; gx++) {
+    let r = 0, g = 0, b = 0, m = 0;
+    for (let y = ay + Math.floor(gy * ah / GY); y < ay + Math.floor((gy + 1) * ah / GY); y++)
+      for (let x = ax + Math.floor(gx * aw / GX); x < ax + Math.floor((gx + 1) * aw / GX); x++) { const p = px(x, y); r += p[0]; g += p[1]; b += p[2]; m++; }
+    grid.push(r / m, g / m, b / m);
+  }
+  const mean = grid.reduce((s, v) => s + v, 0) / grid.length || 1;
+  const ngrid = grid.map(v => v / mean); // insensible à la luminosité globale
+  const gray = [];
+  for (let gy = 0; gy < 8; gy++) for (let gx = 0; gx < 9; gx++) {
+    let s = 0, m = 0;
+    for (let y = ay + Math.floor(gy * ah / 8); y < ay + Math.floor((gy + 1) * ah / 8); y++)
+      for (let x = ax + Math.floor(gx * aw / 9); x < ax + Math.floor((gx + 1) * aw / 9); x++) { const p = px(x, y); s += p[0] * .3 + p[1] * .59 + p[2] * .11; m++; }
+    gray.push(s / m);
+  }
+  const hash = []; for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) hash.push(gray[y * 9 + x] > gray[y * 9 + x + 1] ? 1 : 0);
+  return { border: { rgb: brgb, hsv: bh, cls: borderClass(bh) }, grid: ngrid, hash };
+}
+function fpDistance(a, b) {
+  let hd = 0; for (let i = 0; i < 64; i++) hd += a.hash[i] !== b.hash[i];
+  let gd = 0; for (let i = 0; i < a.grid.length; i++) gd += Math.abs(a.grid[i] - b.grid[i]); gd /= a.grid.length;
+  const A = a.border.hsv, B = b.border.hsv;
+  const dh = Math.min(1, Math.min(Math.abs(A.h - B.h), 360 - Math.abs(A.h - B.h)) / 30);
+  const bd = Math.abs(A.s - B.s) + Math.abs(A.v - B.v) * 0.6 + (A.s > 0.18 && B.s > 0.18 ? dh : 0) + (a.border.cls !== b.border.cls ? 0.15 : 0);
+  return { total: (hd / 64) * 0.9 + gd * 1.2 + bd * 0.9, art: (hd / 64) * 0.9 + gd * 1.2, border: bd };
+}
+const fpCache = new Map();
+function imageFingerprint(url) {
+  if (!url) return Promise.resolve(null);
+  if (fpCache.has(url)) return fpCache.get(url);
+  const p = new Promise(res => {
+    const img = new Image(); img.crossOrigin = "anonymous"; img.decoding = "async";
+    const t = setTimeout(() => res(null), 6000);
+    img.onload = () => { clearTimeout(t); try { res(fingerprint(toCardCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight))); } catch { res(null); } };
+    img.onerror = () => { clearTimeout(t); res(null); };
+    img.src = url;
+  });
+  fpCache.set(url, p); return p;
+}
+/* Bordure probable d'après les infos de la carte, quand son image ne peut pas être analysée. */
+function metaBorder(v) {
+  const s = `${v.set} ${v.rarity} ${v.setCode}`;
+  if (v.game === "onepiece") return "noir";
+  if (/30|anniv|c[ée]l[ée]br|celebrat|classi|gold|\bor\b|hyper|dor[ée]/i.test(s)) return "or";
+  if (/^(sv|me)/i.test(v.setCode || "") || (v.setDate || "") >= "2023-03") return "argent";
+  return "jaune";
+}
+async function rankVersions(list, fp) {
+  if (!fp || list.length < 2) return { confident: list.length === 1 };
+  await Promise.all(list.map(async v => {
+    const f = await imageFingerprint(v.img);
+    v.borderCls = f ? f.border.cls : metaBorder(v);
+    if (f) { const d = fpDistance(fp, f); v.match = d.total; }
+    else v.match = 1 + (v.borderCls === fp.border.cls ? 0 : 0.4);
+  }));
+  list.sort((a, b) => a.match - b.match);
+  const gap = list.length > 1 ? list[1].match - list[0].match : 1;
+  return { confident: list[0].match < 0.9 && gap > 0.12 };
+}
+
+/* ============ Scan automatique : la carte est photographiée dès qu'elle est stable et nette ============ */
+let needChange = false, autoOn = store.get("cotecarte.autoScan", true), watching = false, busy = false, lastSmall = null, stableN = 0, cooldownUntil = 0, lastFp = null, lastShot = null;
+function setAuto(on) {
+  autoOn = on; store.set("cotecarte.autoScan", on);
+  $("#autoBtn").setAttribute("aria-pressed", on); $("#autoBtn").textContent = on ? "Scan auto : activé" : "Scan auto : désactivé";
+  if (on && stream) startWatch(); else stopWatch();
+}
+function startWatch() { if (watching || !stream) return; watching = true; stableN = 0; lastSmall = null; $("#cam").classList.add("reading"); watchTick(); }
+function stopWatch() { watching = false; $("#cam").classList.remove("reading", "locking"); $("#cam").style.removeProperty("--lock"); }
+function stopReading() { stopWatch(); }
+const SW = 48, SH = 67;
+const smallCv = document.createElement("canvas"); smallCv.width = SW; smallCv.height = SH;
+function measure() {
+  const g = guideInVideo(); if (!g) return null;
+  const x = smallCv.getContext("2d", { willReadFrequently: true });
+  x.drawImage(video, g.x, g.y, g.w, g.h, 0, 0, SW, SH);
+  const d = x.getImageData(0, 0, SW, SH).data, gr = new Float32Array(SW * SH);
+  let mean = 0;
+  for (let i = 0; i < gr.length; i++) { gr[i] = d[i * 4] * .3 + d[i * 4 + 1] * .59 + d[i * 4 + 2] * .11; mean += gr[i]; }
+  mean /= gr.length;
+  let varc = 0, lap = 0, lapN = 0, diff = 0;
+  for (let i = 0; i < gr.length; i++) varc += (gr[i] - mean) ** 2;
+  for (let y = 1; y < SH - 1; y++) for (let xx = 1; xx < SW - 1; xx++) {
+    const i = y * SW + xx, l = 4 * gr[i] - gr[i - 1] - gr[i + 1] - gr[i - SW] - gr[i + SW]; lap += l * l; lapN++;
+  }
+  if (lastSmall) { for (let i = 0; i < gr.length; i++) diff += Math.abs(gr[i] - lastSmall[i]); diff /= gr.length; } else diff = 99;
+  lastSmall = gr;
+  return { std: Math.sqrt(varc / gr.length), sharp: lap / lapN, diff };
+}
+async function watchTick() {
+  while (watching) {
+    if (!busy && Date.now() > cooldownUntil && !document.hidden) {
+      const m = measure();
+      if (m) {
+        const present = m.std > 22 && m.sharp > 60, still = m.diff < 5.5;
+        // Après un ajout, on attend que la carte soit retirée ou changée avant de reprendre une photo.
+        if (needChange) { if (!present || m.diff > 14) needChange = false; else { status("Retirez la carte ou posez la suivante."); await sleep(140); continue; } }
+        stableN = present && still ? stableN + 1 : Math.max(0, stableN - 2);
+        $("#cam").classList.toggle("locking", stableN > 0);
+        $("#cam").style.setProperty("--lock", Math.min(1, stableN / 5));
+        if (!present) status("Placez une carte dans le cadre.");
+        else if (!still) status("Tenez la carte immobile…");
+        if (stableN >= 5) { stableN = 0; await capture(); }
       }
-      status(tries < 10 ? "Lecture en cours… tenez la carte immobile." : "Toujours rien : rapprochez-vous, essayez le zoom, ou prenez une « Photo HD ».");
-      await sleep(100);
     }
-  } catch (e) {
-    stopReading();
-    status(e?.message === "ocr-missing" ? "Le module de lecture n'a pas pu se charger. Tapez le numéro." : "La lecture a échoué. Réessayez ou tapez le numéro.", true);
+    await sleep(140);
   }
 }
-function stopReading() { reading = false; $("#cam").classList.remove("reading"); $("#scanBtn").textContent = "Lire le numéro"; }
-$("#scanBtn").onclick = () => {
-  if (reading) { stopReading(); status(""); return; }
-  reading = true; $("#scanBtn").textContent = "Arrêter"; readLoop();
-};
+async function grabStill() {
+  const g = guideInVideo(); if (!g) return null;
+  // Photo pleine résolution quand le navigateur le permet (Chrome Android), sinon l'image vidéo.
+  if (window.ImageCapture && track && !/iPhone|iPad/.test(navigator.userAgent)) {
+    try {
+      const blob = await Promise.race([new ImageCapture(track).takePhoto(), sleep(2500).then(() => null)]);
+      if (blob) {
+        const bmp = await createImageBitmap(blob), k = bmp.width / g.vw;
+        if (Math.abs(bmp.height / bmp.width - g.vh / g.vw) < 0.02) return { src: bmp, g: { x: g.x * k, y: g.y * k, w: g.w * k, h: g.h * k, vw: bmp.width, vh: bmp.height } };
+      }
+    } catch { }
+  }
+  const c = document.createElement("canvas"); c.width = g.vw; c.height = g.vh;
+  c.getContext("2d").drawImage(video, 0, 0);
+  return { src: c, g };
+}
+async function capture() {
+  if (busy) return; busy = true;
+  $("#cam").classList.remove("locking"); $("#cam").classList.add("flash"); setTimeout(() => $("#cam").classList.remove("flash"), 260);
+  try {
+    status("Photo prise, analyse…");
+    const still = await grabStill(); if (!still) return;
+    const { src, g } = still;
+    const card = document.createElement("canvas"); card.width = Math.round(g.w); card.height = Math.round(g.h);
+    card.getContext("2d").drawImage(src, g.x, g.y, g.w, g.h, 0, 0, card.width, card.height);
+    const ok = await identify(card);
+    if (!ok) { status("Carte non reconnue, nouvel essai… Rapprochez-vous un peu ou évitez les reflets."); cooldownUntil = Date.now() + 900; }
+  } catch { status("Analyse impossible, nouvel essai…", true); cooldownUntil = Date.now() + 1500; }
+  finally { busy = false; }
+}
+/* Lit le numéro, le code d'extension et le nom sur une image de carte déjà recadrée, puis cherche la carte. */
+async function identify(card, opts = {}) {
+  const w = await getWorker();
+  lastFp = fingerprint(toCardCanvas(card, 0, 0, card.width, card.height));
+  lastShot = card.toDataURL("image/jpeg", 0.8);
+  const W = card.width, H = card.height;
+  const zones = opts.photo
+    ? [[0, H * 0.5, W, H * 0.5, 2400], [0, 0, W, H, 2200]]
+    : [[0, H * 0.84, W * 0.62, H * 0.16, 1500], [W * 0.38, H * 0.84, W * 0.62, H * 0.16, 1500], [0, H * 0.78, W, H * 0.22, 1800]];
+  const seen = [];
+  for (const [sx, sy, sw, sh, mw] of zones) for (const mode of [0, 1, 2]) {
+    const { data } = await w.recognize(prep(card, Math.max(0, sx), Math.max(0, sy), Math.min(sw, W - sx), Math.min(sh, H - sy), mode, mw));
+    seen.push(data.text); showRaw(seen.join(" ").slice(-60));
+    const hit = parseCode(data.text || "");
+    if (hit) { found(hit); return true; }
+  }
+  // Pas de numéro lisible : on tente le nom (haut de la carte), puis l'illustration départage les résultats.
+  if (!opts.photo) {
+    await w.setParameters({ tessedit_char_whitelist: "" });
+    try {
+      const { data } = await w.recognize(prep(card, W * 0.06, H * 0.02, W * 0.66, H * 0.09, 0, 1200));
+      const name = (data.text || "").replace(/[^A-Za-zÀ-ÿ' -]/g, " ").replace(/\b(BASE|NIVEAU|PV|HP|STAGE|BASIC)\b/gi, " ").replace(/\s+/g, " ").trim();
+      if (name.length >= 4) { found({ game: "pokemon", name, code: name, fromName: true }); return true; }
+    } finally { await w.setParameters({ tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/- " }); }
+  }
+  return false;
+}
 function found(hit) {
-  stopReading(); showRaw("", true);
+  stopWatch(); showRaw("", true);
   if (navigator.vibrate) navigator.vibrate(60);
-  status(`Numéro lu : ${hit.code}`);
+  status(hit.fromName ? `Nom lu : ${hit.name}` : `Numéro lu : ${hit.code}`);
   lookup(hit);
 }
+$("#autoBtn").onclick = () => setAuto(!autoOn);
+$("#scanBtn").onclick = async () => { if (!stream) return; stopWatch(); await capture(); if (autoOn && !$("#results").children.length) startWatch(); };
 /* Photo HD : l'appareil photo natif donne une image bien plus nette que le flux vidéo. */
 $("#photo").onchange = async e => {
   const f = e.target.files?.[0]; e.target.value = ""; if (!f) return;
-  stopReading();
+  stopWatch();
   try {
-    const w = await getWorker();
     status("Analyse de la photo… (quelques secondes)");
-    const bmp = await createImageBitmap(f);
-    const W = bmp.width, H = bmp.height;
-    const zones = [[0, H * 0.5, W, H * 0.5, 2400], [0, 0, W, H, 2200]];
-    for (const [sx, sy, sw, sh, mw] of zones) for (const mode of [0, 1, 2]) {
-      const { data } = await w.recognize(prep(bmp, sx, sy, sw, sh, mode, mw));
-      showRaw(data.text);
-      const hit = parseCode(data.text || "");
-      if (hit) return found(hit);
-    }
-    status("Numéro introuvable sur la photo. Reprenez la carte de plus près, bien à plat, ou tapez le numéro.", true);
+    const bmp = await createImageBitmap(f), c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height; c.getContext("2d").drawImage(bmp, 0, 0);
+    if (!(await identify(c, { photo: true }))) status("Numéro introuvable sur la photo. Reprenez la carte de plus près, bien à plat, ou tapez le numéro.", true);
   } catch { status("Impossible de lire cette photo. Tapez le numéro.", true); }
 };
+/* Reprendre le scan pour la carte suivante */
+function resumeScan(sameCardOk) { needChange = !sameCardOk; $("#results").innerHTML = ""; versions = []; chosen = null; lastFp = null; lastShot = null; cooldownUntil = Date.now() + 1200; if (autoOn && stream) startWatch(); status(autoOn && stream ? "Carte suivante : placez-la dans le cadre." : ""); }
 
 /* ============ Recherche manuelle ============ */
 $("#search").addEventListener("submit", e => {
   e.preventDefault();
   const raw = $("#q").value.trim(); if (!raw) return;
+  lastFp = null; lastShot = null; stopWatch();
   const hit = parseCode(raw);
   if (hit) return lookup(hit);
   if (raw.length >= 3 && /[a-zà-ÿ]/i.test(raw)) return lookup({ game: "pokemon", name: raw, code: raw });
@@ -282,7 +445,7 @@ async function fetchOnePiece(code) {
     };
   });
 }
-async function fetchPokemon(hit) {
+async function fetchPokemonTcgio(hit) {
   const sel = "id,name,number,rarity,set,images,cardmarket,supertype,types";
   const base = `https://api.pokemontcg.io/v2/cards?pageSize=36&select=${sel}&q=`;
   const q = s => getJSON(base + encodeURIComponent(s));
@@ -307,10 +470,61 @@ async function fetchPokemon(hit) {
   }
   return out;
 }
+/* TCGdex : base à jour (sets récents comme 30th Celebration), noms en français, cotes Cardmarket. */
+const TCGDEX = "https://api.tcgdex.net/v2";
+const FR_TYPES = { Plante: "Grass", Feu: "Fire", Eau: "Water", "Électrique": "Lightning", Psy: "Psychic", Combat: "Fighting", "Obscurité": "Darkness", "Métal": "Metal", Dragon: "Dragon", "Fée": "Fairy", Incolore: "Colorless" };
+const setsCache = {};
+async function tcgdexSets(lang) {
+  if (setsCache[lang]) return setsCache[lang];
+  const k = "cotecarte.tcgdexSets." + lang;
+  try { const c = JSON.parse(sessionStorage.getItem(k) || "null"); if (c) return setsCache[lang] = c; } catch { }
+  const list = await getJSON(`${TCGDEX}/${lang}/sets`);
+  const slim = (list || []).map(s => ({ id: s.id, name: s.name, official: s.cardCount?.official, total: s.cardCount?.total }));
+  try { sessionStorage.setItem(k, JSON.stringify(slim)); } catch { }
+  return setsCache[lang] = slim;
+}
+function fromTcgdex(d) {
+  const cm = d.pricing?.cardmarket || {}, v = d.variants || {};
+  const cat = String(d.category || "");
+  const common = {
+    game: "pokemon", code: `${d.localId}/${d.set?.cardCount?.official ?? "?"}`, number: String(d.localId), total: d.set?.cardCount?.official,
+    name: d.name, set: d.set?.name || "", setCode: d.set?.id || "", setDate: "", setSymbol: d.set?.symbol ? d.set.symbol + ".webp" : "",
+    rarity: d.rarity || "", img: d.image ? d.image + "/low.webp" : "", imgLarge: d.image ? d.image + "/high.webp" : "",
+    refCurrency: "EUR", source: "Cardmarket", cmUrl: "", apiId: "tcgdex:" + d.id,
+    pkTypes: (d.types || []).map(t => FR_TYPES[t] || t), pkSuper: /dresseur|trainer/i.test(cat) ? "Trainer" : /[ée]nergie|energy/i.test(cat) ? "Energy" : "Pokémon"
+  };
+  const out = [], holoOnly = v.holo && !v.normal;
+  out.push({ ...common, vid: "tx:" + d.id, variant: holoOnly ? "Holo" : "Normale", refPrice: num(holoOnly ? (cm["trend-holo"] ?? cm.trend) : (cm.trend ?? cm.avg30 ?? cm.avg)) });
+  if (v.reverse && v.normal && num(cm["trend-holo"])) out.push({ ...common, vid: "tx:" + d.id + ":rev", variant: "Reverse", refPrice: num(cm["trend-holo"]) });
+  return out;
+}
+async function tcgdexLookup(hit, lang) {
+  if (hit.name) {
+    const briefs = (await getJSON(`${TCGDEX}/${lang}/cards?name=${encodeURIComponent(hit.name)}`)) || [];
+    let top = briefs.slice(0, 40);
+    if (lastFp && top.length > 8) { // l'illustration choisit les 8 meilleurs candidats avant de charger leurs fiches
+      const scored = await Promise.all(top.map(async b => { const f = await imageFingerprint(b.image ? b.image + "/low.webp" : ""); return { b, s: f ? fpDistance(lastFp, f).total : 9 }; }));
+      top = scored.sort((a, b) => a.s - b.s).map(x => x.b);
+    }
+    const det = await Promise.all(top.slice(0, 8).map(b => getJSON(`${TCGDEX}/${lang}/cards/${encodeURIComponent(b.id)}`).catch(() => null)));
+    return det.filter(Boolean).flatMap(fromTcgdex);
+  }
+  const sets = (await tcgdexSets(lang)).filter(s => !hit.total || s.official === hit.total || s.total === hit.total);
+  const ids = [...new Set([hit.number, hit.number.padStart(3, "0")])];
+  const det = await Promise.all(sets.slice(0, 30).flatMap(s => ids.map(id => getJSON(`${TCGDEX}/${lang}/sets/${encodeURIComponent(s.id)}/${encodeURIComponent(id)}`).catch(() => null))));
+  const uniq = new Map(); det.filter(d => d?.id).forEach(d => uniq.set(d.id, d));
+  return [...uniq.values()].flatMap(fromTcgdex);
+}
+async function fetchPokemon(hit) {
+  for (const lang of ["fr", "en"]) {
+    try { const r = await tcgdexLookup(hit, lang); if (r.length) return r; } catch { }
+  }
+  return fetchPokemonTcgio(hit);
+}
 const cmLink = c => c.cmUrl || `https://www.cardmarket.com/fr/${GAME[c.game].cm}/Products/Search?searchString=${encodeURIComponent(c.name + (c.game === "onepiece" ? " " + c.code : ""))}`;
 
 /* ============ Propositions : version, langue, prix ============ */
-let versions = [], chosen = null, pick = { lang: "FR" };
+let versions = [], chosen = null, pick = { lang: "FR" }, borderFilter = "";
 async function lookup(hit) {
   $("#results").innerHTML = ""; versions = []; chosen = null;
   pick = { lang: hit.lang || "FR" };
@@ -322,21 +536,31 @@ async function lookup(hit) {
     $("#results").innerHTML = `<p class="note">Vous pouvez vérifier la cote directement sur <a href="https://www.cardmarket.com/fr/${GAME[hit.game].cm}/Products/Search?searchString=${encodeURIComponent(hit.number || hit.code)}" target="_blank" rel="noopener">Cardmarket</a>.</p>`;
     return;
   }
-  if (!versions.length) { status(`Aucune carte trouvée pour ${hit.code}. Vérifiez le numéro.`, true); return; }
-  status(versions.length === 1 ? "Carte trouvée." : `${versions.length} versions correspondent : choisissez la vôtre.`);
-  if (versions.length === 1) chosen = versions[0];
+  if (!versions.length) { status(`Aucune carte trouvée pour ${hit.code}. Vérifiez le numéro.`, true); renderVersions(); return; }
+  if (versions.length > 1 && lastFp) status(`${versions.length} versions possibles : comparaison de l'illustration et de la bordure…`);
+  const rk = await rankVersions(versions, lastFp);
+  borderFilter = "";
+  if (versions.length === 1 || rk.confident) chosen = versions[0];
+  status(versions.length === 1 ? "Carte trouvée." : chosen ? `Version la plus proche présélectionnée parmi ${versions.length}. Vérifiez puis ajoutez.` : `${versions.length} versions correspondent : choisissez la vôtre.`);
   renderVersions();
   $("#results").scrollIntoView({ block: "start", behavior: reduceMotion.matches ? "auto" : "smooth" });
 }
 function renderVersions() {
   const el = $("#results");
-  el.innerHTML = (versions.length > 1 ? `<h2 class="pick-title">Quelle version avez-vous ?</h2><p class="pick-sub">Comparez l'illustration, le symbole d'extension et la brillance.</p>` : "")
-    + `<div class="versions">${versions.map(v => `
+  const det = lastFp?.border.cls, classes = [...new Set(versions.map(v => v.borderCls).filter(Boolean))];
+  const shown = borderFilter ? versions.filter(v => v.borderCls === borderFilter) : versions;
+  const best = lastFp && versions.length > 1 && versions[0].match != null ? versions[0].vid : null;
+  el.innerHTML = (lastShot ? `<div class="shot-row"><img class="shot" src="${lastShot}" alt="Votre carte"><div class="shot-info"><span class="cfg-label">Votre carte</span>
+      ${det ? `<p class="note">Bordure détectée : <b>${BORDERS[det]}</b></p>` : ""}<button class="btn small" type="button" id="nextCard">${versions.length ? "Pas la bonne ? Rescanner" : "Rescanner"}</button></div></div>` : "")
+    + (versions.length > 1 ? `<h2 class="pick-title">Quelle version avez-vous ?</h2><p class="pick-sub">${best ? "Classées de la plus ressemblante à la moins ressemblante (illustration et bordure)." : "Comparez l'illustration, le symbole d'extension et la bordure."}</p>` : "")
+    + (classes.length > 1 ? `<div class="cfg-row"><span class="cfg-label">Bordure</span><div class="chips" id="bFilter"><button type="button" class="chip" data-b="" aria-pressed="${!borderFilter}">Toutes</button>${classes.map(c => `<button type="button" class="chip" data-b="${c}" aria-pressed="${borderFilter === c}">${BORDERS[c]}${c === det ? " · détectée" : ""}</button>`).join("")}</div></div>` : "")
+    + `<div class="versions">${shown.map(v => `
       <button class="version" type="button" data-vid="${esc(v.vid)}" aria-pressed="${chosen?.vid === v.vid}">
+        ${v.vid === best ? '<span class="best">Plus proche</span>' : ""}
         <img class="art" src="${esc(v.img)}" alt="${esc(v.name)}" loading="lazy">
         <span class="v-name">${esc(v.name)}</span>
-        <span class="v-set">${v.setSymbol ? `<img src="${esc(v.setSymbol)}" alt="">` : ""}${esc(v.set || v.setCode)}</span>
-        <span class="v-set">${esc([v.code, v.variant, v.rarity].filter(Boolean).join(" · "))}</span>
+        <span class="v-set">${v.setSymbol ? `<img src="${esc(v.setSymbol)}" alt="" onerror="this.remove()">` : ""}${esc(v.set || v.setCode)}</span>
+        <span class="v-set">${esc([v.code, v.variant, v.rarity, v.borderCls ? "bordure " + BORDERS[v.borderCls].toLowerCase() : ""].filter(Boolean).join(" · "))}</span>
         <span class="v-price">${money(v.refPrice, v.refCurrency)}</span>
       </button>`).join("")}</div><div id="config"></div>`;
   $$(".version", el).forEach(b => b.onclick = () => {
@@ -344,6 +568,8 @@ function renderVersions() {
     $$(".version", el).forEach(x => x.setAttribute("aria-pressed", x === b));
     renderConfig(); $("#config").scrollIntoView({ block: "nearest", behavior: reduceMotion.matches ? "auto" : "smooth" });
   });
+  $$("#bFilter .chip", el).forEach(b => b.onclick = () => { borderFilter = b.dataset.b; renderVersions(); });
+  $("#nextCard", el)?.addEventListener("click", () => resumeScan(true));
   renderConfig();
 }
 function langNote(game, lang) {
@@ -380,8 +606,9 @@ function renderConfig() {
     const cur = $("#pCur").value;
     const { ...base } = c;
     addToColl({ ...base, lang: pick.lang, price, currency: cur, priceManual: price !== c.refPrice || cur !== c.refCurrency });
-    status(`${c.name} (${pick.lang}) rangée dans le classeur.`);
-    $("#results").innerHTML = ""; versions = []; chosen = null; $("#q").value = "";
+    $("#q").value = "";
+    resumeScan();
+    status(`${c.name} (${pick.lang}) rangée dans le classeur.${autoOn && stream ? " Carte suivante : placez-la dans le cadre." : ""}`);
   };
 }
 
@@ -762,6 +989,7 @@ $("#sheet").addEventListener("click", e => { if (e.target === $("#sheet")) $("#s
 
 /* ============ Mise à jour des cotes et des infos ============ */
 async function freshVersions(c) {
+  if (String(c.vid).startsWith("tx:")) { const id = c.vid.slice(3).replace(/:rev$/, ""); return fromTcgdex(await getJSON(`${TCGDEX}/fr/cards/${encodeURIComponent(id)}`)); }
   return c.game === "onepiece" ? fetchOnePiece(c.code)
     : fetchPokemon({ number: c.number || String(c.code).split("/")[0], total: +(c.total || String(c.code).split("/")[1]), setCode: "" });
 }
@@ -1019,6 +1247,7 @@ $("#radius").onchange = () => { if (here) searchAround(here.lat, here.lon, here.
 /* ============ Démarrage ============ */
 $$(".binder-head .chip").forEach(x => x.setAttribute("aria-pressed", x.dataset.game === bState.game));
 $("#groupBy").value = bState.groupBy;
+setAuto(autoOn);
 $("#groupBy").querySelector('[value="jeu"]').hidden = bState.game !== "all";
 $("#showPrices").checked = bState.showPrices;
 { const sp = store.get("cotecarte.product", null), today = new Date().toISOString().slice(0, 10);
